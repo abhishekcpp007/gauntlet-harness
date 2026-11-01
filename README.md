@@ -100,11 +100,17 @@ from gauntlet_harness.schema import HarnessTask
 
 task = HarnessTask.model_validate_json(open("tasks.jsonl").readline())
 env = SWEEnv(task, max_steps=60)
-obs, info = env.reset()                       # the issue, plus where the repo is
+obs, info = env.reset()  # the issue, plus where the repo is
 obs, reward, terminated, truncated, info = env.step({"type": "bash", "command": "pytest -q -x"})
 obs, reward, terminated, truncated, info = env.step(
-    {"type": "edit", "command": "str_replace", "path": "src/prettytable/prettytable.py",
-     "old_str": "...", "new_str": "..."})
+    {
+        "type": "edit",
+        "command": "str_replace",
+        "path": "src/prettytable/prettytable.py",
+        "old_str": "...",
+        "new_str": "...",
+    }
+)
 obs, reward, terminated, truncated, info = env.step({"type": "submit"})
 info["result"].reward, info["result"].grade.rates(), info["result"].rubric.score
 ```
@@ -131,6 +137,19 @@ Runs resume: episodes already in `results.jsonl` are skipped.
 Claude policies use Anthropic's bash and text editor tools with adaptive thinking, and they opt into the API's server-side refusal fallback. They need `ANTHROPIC_API_KEY`. `--attempts N` gives unbiased pass@k (Chen et al., 2021). Add `--judge` for LLM rubric items scored by `claude-opus-5-5`.
 
 `gauntlet report --cutoff YYYY-MM-DD` splits every metric into PRs merged before and after a date. Set it to a model's training cutoff. A model that does much better on the older half has probably seen those fixes before.
+
+## Bring any agent: the HTTP env server
+
+`gauntlet serve` puts one task's environment behind three endpoints, so an agent in any language, or on any model provider, can play it without importing this package:
+
+```bash
+gauntlet serve --tasks tasks.jsonl --task prettytable__prettytable-475 --policy my-agent -o runs
+curl -X POST localhost:8765/reset
+curl -X POST localhost:8765/step -d '{"type": "bash", "command": "grep -rn appends src/"}'
+curl -X POST localhost:8765/step -d '{"type": "submit"}'
+```
+
+The episode is graded and recorded exactly like `gauntlet run`. I tested it by playing the prettytable task myself through Claude Code (Claude Opus 5.5) in 7 steps: reproduce the bug, read the loop, fix the off-by-one, rerun the suite, submit. It resolved the task (1/1 F2P, 337/337 P2P), came back clean from Cheat Catcher, and scored a rubric of 1.00 and a reward of 0.979. The reward missed 1.0 only because the fix was written differently from the merged one (`for _ in range(appends)`), which gave a similarity of 0.86. That's also the known weakness of SWE-RL style similarity: a correct patch can still look different.
 
 ## Limits
 

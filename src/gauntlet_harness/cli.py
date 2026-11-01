@@ -189,6 +189,27 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    from .serve import EnvServer, serve
+
+    tasks = {t.instance_id: t for t in _read_models(args.tasks, HarnessTask)}
+    task = tasks.get(args.task) if args.task else next(iter(tasks.values()), None)
+    if task is None:
+        print(f"error: no task {args.task!r} in {args.tasks}", file=sys.stderr)
+        return 2
+    env_server = EnvServer(task, policy=args.policy, out_dir=Path(args.output), max_steps=args.max_steps)
+    httpd = serve(env_server, port=args.port)
+    where = f"http://127.0.0.1:{httpd.server_address[1]}"
+    print(f"serving {task.instance_id} as {args.policy} on {where}", flush=True)
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        env_server.close()
+    return 0
+
+
 def cmd_pipeline(args: argparse.Namespace) -> int:
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
@@ -269,6 +290,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--cutoff", help="YYYY-MM-DD, split metrics before/after to spot contamination")
     p.add_argument("--html")
     p.set_defaults(fn=cmd_report)
+
+    p = sub.add_parser("serve", help="expose one task's env over HTTP for an external agent")
+    p.add_argument("--tasks", required=True)
+    p.add_argument("--task", help="instance_id, defaults to the first task")
+    p.add_argument("--policy", default="external", help="name recorded in results")
+    p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--max-steps", type=int, default=60)
+    p.add_argument("-o", "--output", default="runs")
+    p.set_defaults(fn=cmd_serve)
 
     p = sub.add_parser("pipeline", help="collect, build, run and report in one go")
     p.add_argument("--repo", action="append", required=True)
