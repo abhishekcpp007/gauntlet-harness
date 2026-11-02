@@ -7,3 +7,4 @@ dist/
 trajectories/
 *.jsonl
 runs/
+!datasets/**/*.jsonl
