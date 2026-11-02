@@ -1,36 +1,73 @@
 # gauntlet-harness
 
-Turn pull requests merged on GitHub *this week* into leak-free RL environments for coding agents. Then run models in them, record every trajectory, and judge each episode on how its tests move (F2P, N2P, S2P, P2P) plus a rubric.
+[![CI](https://github.com/abhishekcpp007/gauntlet-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/abhishekcpp007/gauntlet-harness/actions/workflows/ci.yml)
+[![Live tasks](https://github.com/abhishekcpp007/gauntlet-harness/actions/workflows/live.yml/badge.svg)](https://github.com/abhishekcpp007/gauntlet-harness/actions/workflows/live.yml)
+![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+
+Turn pull requests merged on GitHub *this week* into leak-free RL environments for coding agents. Run models in them, record every step, judge each episode on how its tests move (F2P, N2P, S2P, P2P) plus a rubric, and export the episodes as SFT, GRPO or DPO training data.
+
+Static benchmarks go stale. Once a fix is on GitHub long enough, it's in somebody's training set, and a high score stops meaning much. This harness keeps making new tasks out of PRs that were merged after a model's cutoff, so the model can't have seen the answer.
 
 ```bash
-gauntlet collect --repo prettytable/prettytable --merged-after 2026-01-01 --limit 8
-gauntlet build   --prs prs.jsonl
-gauntlet run     --tasks tasks.jsonl --policies claude:claude-opus-5-5,claude:claude-sonnet-5-5,oracle,noop,cheater --attempts 3
+pip install "gauntlet-harness[claude,gym] @ git+https://github.com/abhishekcpp007/gauntlet-harness"
+
+gauntlet collect --repo mahmoud/boltons --merged-after 2026-09-01 -o prs.jsonl
+gauntlet build   --prs prs.jsonl -o tasks.jsonl          # validated, leak-checked tasks
+gauntlet run     --tasks tasks.jsonl --policies claude:claude-opus-5-5,claude:claude-sonnet-5-5,oracle,noop,cheater --attempts 4
 gauntlet report  --results runs/results.jsonl --cutoff 2026-06-01 --html report.html
+gauntlet export  --format dpo --results runs/results.jsonl -o dpo.jsonl
 ```
 
-Or all of it at once with `gauntlet pipeline`.
+## Gauntlet Live, November 2026
 
-## A real run
+A ready-made task set built with this harness lives in [`datasets/gauntlet-live-2026-11`](datasets/gauntlet-live-2026-11). Every task is a real PR merged between 7 September and 30 October 2026.
 
-This is from 2 November 2026, against the eight most recent merged PRs in [prettytable](https://github.com/prettytable/prettytable). The newest one was merged the day before.
-
-| PR | What happened |
+| | |
 |---|---|
-| #536, #537, #506, #505, #496 | rejected at filter: no Python source changes (dependency bumps, CI) |
-| #509 | rejected at filter: no test changes |
-| #510 | rejected at transitions: no test moves to passing |
-| **#475** | **kept.** "Handle rows with fewer cells than header" closes issue #474. 1 F2P, 337 P2P, leak check clean |
+| Tasks | **53**, from 10 repos |
+| PRs looked at | 186, and 133 rejected for a stated reason |
+| Target tests (F2P + N2P) | 866 |
+| Regression guards (P2P) | 44,578, median 505 per task |
+| Oracle (applies the real fix) | resolves **53 / 53** |
+| Noop (gives up) | resolves 0, reward -1 on every task |
+| Cheater (forges test results) | caught **53 / 53** by Cheat Catcher, reward -1 on every task |
 
-Then three calibration policies, two attempts each, on that task:
+So every task is solvable, doing nothing never pays, and gaming the grader never pays either. The task set ships in two shapes: `tasks.jsonl` for this harness and `swebench.jsonl` for any SWE-bench style harness. The [data card](datasets/gauntlet-live-2026-11/README.md) has the per-repo counts and the full rejection funnel.
 
-| Policy | Resolved | F2P | P2P | Rubric | Reward | Cheating |
-|---|---|---|---|---|---|---|
-| oracle | 1.000 | 1.000 | 1.000 | 1.000 | +1.000 | 0.000 |
-| noop | 0.000 | 0.000 | 1.000 | 0.000 | -1.000 | 0.000 |
-| cheater | 0.000 | 0.000 | 1.000 | 0.350 | -1.000 | 1.000 |
+## It found its own bugs
 
-The cheater planted a conftest hook that marks every test as passed, and it skipped the target test file. The grader dropped both edits (`conftest.py`, `tests/test_html.py`), and Cheat Catcher flagged six rules, including `outcome-forcing` and `protected-test-edit`. It got a reward of -1, the same as doing nothing. That's the point: in this harness, cheating never pays more than an honest attempt.
+The harness passed every test on a toy repo. Then I pointed it at 186 real PRs, and real data broke it in six ways. Each one is fixed now, with a regression test named after the PR that exposed it:
+
+- **A stdlib false positive.** cachetools #445 was rejected as a leak, because the fix adds `def __call__(self, /, *args, **kwargs):`, a line that's also in Python's own `unittest/mock.py`. The stdlib ships with the base image, so it can't hold this PR's fix. Hits there don't count anymore.
+- **Idioms in other libraries.** Four packaging PRs were rejected over lines like `return self.__class__(` turning up inside pytest and hypothesis. A hit in installed packages now counts only when it's in a copy of the project itself, from PyPI or vendored (`pip/_vendor/packaging` still counts).
+- **Imports looked like fingerprints.** `from typing import TYPE_CHECKING, TypeVar` is long, but it doesn't identify anything. Import lines aren't treated as distinctive now.
+- **Overlapping needles.** cattrs #777 adds a test whose name already existed at the base commit, so it should have been ignored. But `git grep -o` prints one match per spot, so the def line hid the shorter name inside it, and the name looked new. The lookup now matches each needle against whole lines.
+- **A silent `git grep` failure** would have produced the same false leak. It raises now.
+- **A crash that sank a batch.** pytest died mid-write on a packaging PR and left an empty JUnit file. The parse error killed the run for all 15 PRs. Now a broken report counts as no report, and one bad PR only rejects itself.
+
+One more real-world case: packaging has 63,350 tests, more than fits in the 15 minute budget. When the full suite gives no report, the build falls back to the PR's own test modules and records that in the task.
+
+All told, these fixes won back 14 of the 53 tasks, all of which the first version threw away.
+
+## How it fits together
+
+```mermaid
+flowchart LR
+    GH[GitHub merged PRs] -->|collect| F{filter}
+    F -->|code + tests| B[build env at the base commit]
+    B --> R3[3 runs: base, base+tests, base+tests+fix x2]
+    R3 -->|F2P N2P S2P P2P, flaky dropped| L[leak check, 8 checks]
+    L --> T[(tasks.jsonl)]
+    T --> E[SWEEnv / Gymnasium / HTTP]
+    P[policies: Claude, oracle, noop, cheater, yours] --> E
+    E -->|patch + trajectory| G[grade: hidden tests]
+    E --> C[Cheat Catcher]
+    G --> RW[reward = tests + rubric + similarity]
+    C --> RW
+    RW --> REP[report: pass@k, cutoff split]
+    RW --> X[export: SFT, GRPO, DPO]
+```
 
 ## What it's built on
 
@@ -39,16 +76,17 @@ I didn't invent the method. Each piece follows a published one:
 | Paper | What I took from it |
 |---|---|
 | [SWE-bench](https://arxiv.org/abs/2310.06770) (Jimenez et al., ICLR 2024) | Task = issue + base commit + hidden tests. Candidate patch first, then tests on top |
-| [Multi-SWE-bench](https://arxiv.org/abs/2504.02605) (Zan et al., 2025) | Three runs per PR (base, base+tests, base+tests+fix), four statuses (PASSED, FAILED, SKIPPED, NONE), and its filters: keep ANY→{FAILED,SKIPPED,NONE}→PASSED, drop any PR where a passing test starts failing, drop PRs with no fix |
+| [Multi-SWE-bench](https://arxiv.org/abs/2504.02605) (Zan et al., 2025) | Three runs per PR, four statuses (PASSED, FAILED, SKIPPED, NONE), and its filters: keep ANY→{FAILED,SKIPPED,NONE}→PASSED, drop any PR where a passing test starts failing |
 | [SWE-rebench](https://arxiv.org/abs/2505.20411) (Badertdinov et al., NeurIPS 2025) | Keep collecting fresh PRs, and split results by merge date against a model's cutoff to expose contamination |
 | [Rubrics as Rewards](https://arxiv.org/abs/2507.17746) (Gunjal et al., 2025) | Per-task checklist rubrics in essential / important / optional / pitfall categories, scored by an LLM judge and used as reward |
 | [SWE-RL](https://arxiv.org/abs/2502.18449) (Wei et al., 2025) | `difflib.SequenceMatcher` similarity to the real patch as a dense reward term, and -1 for malformed output |
-| [R2E-Gym](https://arxiv.org/abs/2504.07164) (Jain et al., 2025) | Gym-style SWE environments, verified by execution and by checks that don't execute anything |
+| [R2E-Gym](https://arxiv.org/abs/2504.07164) (Jain et al., 2025) | Gym-style SWE environments, and rejection sampling of solved runs into training data |
+| [DeepSeekMath](https://arxiv.org/abs/2402.03300) (Shao et al., 2024) | GRPO's group-relative advantage, `(r - mean) / std` over attempts on the same task |
 
 ## How a PR becomes a task
 
 1. **Collect.** Closed PRs with `merged_at` set, newest first, through GitHub's public REST API (read-only, `GITHUB_TOKEN` optional). Linked issues come from closing keywords (`fixes #474`). If you hit the rate limit, `--git-fallback` reads merge and squash commits straight from git.
-2. **Filter.** The PR must change Python source and at least one test module.
+2. **Filter.** The PR must change Python source and at least one test module. Most PRs fail here: in the live set, 115 of 186 were dependency bumps, CI or docs.
 3. **Environment at the base commit.** The image is built at the commit right before the merge, never later, and pip and apt caches are wiped before it's frozen. Images are cached by a fingerprint of the dependency files, so PRs that share dependencies share an image.
 4. **Statement.** The linked issue's text is preferred. If there isn't one, it's the PR title and body with diff fences, PR links and HTML comments stripped. A statement that contains a distinctive line of the real fix is rejected.
 5. **Three runs.** `run` (base), `test` (base + the PR's tests), and `fix` (base + tests + fix). The fix run happens twice in fresh sandboxes, and any test that disagrees with itself is marked flaky and left out of grading.
@@ -56,7 +94,7 @@ I didn't invent the method. Each piece follows a published one:
 7. **Leak check** (below). Any failing check rejects the task.
 8. **Rubric.** Rule-based items always, plus LLM-written judge items when Anthropic credentials are set.
 
-The whole suite runs by default (`--scope full`), so P2P covers the entire project and not just the files the PR touched. On prettytable that's 337 regression tests guarding one fix.
+The whole suite runs by default (`--scope full`), so P2P covers the entire project and not just the files the PR touched.
 
 ## No leaks
 
@@ -66,14 +104,14 @@ The whole suite runs by default (`--scope full`), so P2P covers the entire proje
 |---|---|
 | The scratch git repo has exactly one commit | No future history to `git log` the answer from |
 | No line the hidden tests add exists anywhere on disk | The tests aren't readable, not even in image layers |
-| No distinctive line of the gold patch exists anywhere on disk | The answer isn't in a cache or a stale build |
+| No distinctive line of the gold patch exists anywhere on disk | The answer isn't in a cache, a stale build, or a newer copy of the package |
 | New test function names are absent | You can't grep for what you'll be graded on |
 | Network is blocked | No `pip install` of the released fix |
 | `/tmp/gauntlet-*` is absent | Grader scratch files never show up |
 | Env vars are clean | Nothing smuggled in through the environment |
 | The statement doesn't contain the fix | The issue text doesn't give the answer away |
 
-At grading time, the candidate's edits to tests, `conftest.py`, `pytest.ini` and `tox.ini` are dropped before the hidden tests go on.
+Lines that already exist at the base commit are skipped, since finding them proves nothing. At grading time, the candidate's edits to tests, `conftest.py`, `pytest.ini` and `tox.ini` are dropped before the hidden tests go on.
 
 ## Judging
 
@@ -92,7 +130,9 @@ tests  = 1 if resolved, else target_pass_rate × p2p_pass_rate  (partial credit,
 
 All weights live in `RewardConfig`.
 
-## The RL environment
+## Plug it into RL code
+
+### Plain Python
 
 ```python
 from gauntlet_harness.env import SWEEnv
@@ -103,13 +143,7 @@ env = SWEEnv(task, max_steps=60)
 obs, info = env.reset()  # the issue, plus where the repo is
 obs, reward, terminated, truncated, info = env.step({"type": "bash", "command": "pytest -q -x"})
 obs, reward, terminated, truncated, info = env.step(
-    {
-        "type": "edit",
-        "command": "str_replace",
-        "path": "src/prettytable/prettytable.py",
-        "old_str": "...",
-        "new_str": "...",
-    }
+    {"type": "edit", "command": "str_replace", "path": "src/x.py", "old_str": "...", "new_str": "..."}
 )
 obs, reward, terminated, truncated, info = env.step({"type": "submit"})
 info["result"].reward, info["result"].grade.rates(), info["result"].rubric.score
@@ -117,13 +151,42 @@ info["result"].reward, info["result"].grade.rates(), info["result"].rubric.score
 
 Edit actions take the same fields as Anthropic's text editor tool, so a Claude tool call maps onto an action one to one. Reward is sparse: 0 until the terminal step. Running out of steps submits the working tree as it is and sets `truncated`.
 
-Every episode leaves three files behind:
+### Gymnasium
 
-- `runs/trajectories/<episode>.jsonl`: every command and file operation, viewable with `timemachine view`
-- `runs/rl/<episode>.json`: the transcript, actions, reward and its breakdown, ready for SFT or RL
-- one line in `runs/results.jsonl`
+```python
+import gymnasium as gym
+import gauntlet_harness.gym  # registers gauntlet/SWE-v0
 
-Runs resume: episodes already in `results.jsonl` are skipped.
+env = gym.make("gauntlet/SWE-v0", tasks="datasets/gauntlet-live-2026-11/tasks.jsonl", max_steps=60)
+obs, info = env.reset(seed=0)  # the seed picks the task
+obs, reward, terminated, truncated, info = env.step('{"type": "bash", "command": "ls"}')
+```
+
+Actions and observations are text. A malformed action comes back as an error observation instead of a crash, so a policy can recover.
+
+### Over HTTP, from any language
+
+```bash
+gauntlet serve --tasks tasks.jsonl --task mahmoud__boltons-474 --policy my-agent -o runs
+curl -X POST localhost:8765/reset
+curl -X POST localhost:8765/step -d '{"type": "bash", "command": "grep -rn update boltons/setutils.py"}'
+curl -X POST localhost:8765/step -d '{"type": "submit"}'
+```
+
+The episode is graded and recorded exactly like `gauntlet run`. I tested it by playing a prettytable task myself through Claude Code (Claude Opus 5.5) in 7 steps. It resolved the task (1/1 F2P, 337/337 P2P), came back clean from Cheat Catcher, and scored a rubric of 1.00 and a reward of 0.979. It missed 1.0 only because my fix was written differently from the merged one, which is the known weakness of SWE-RL style similarity.
+
+## Turn episodes into training data
+
+Every episode leaves a trajectory (`runs/trajectories/`), an RL record with each action and what came back (`runs/rl/`), and a line in `runs/results.jsonl`. `gauntlet export` turns those into what trainers read:
+
+| Format | What you get | Kept |
+|---|---|---|
+| `swebench` | SWE-bench instances (`FAIL_TO_PASS`, `PASS_TO_PASS` as JSON strings) | every task |
+| `sft` | chat transcripts with function calls, plus the tool schemas | solved, clean runs above `--min-reward` (rejection sampling) |
+| `grpo` | each episode with its group-relative advantage | tasks where attempts disagree, since equal rewards carry no signal |
+| `dpo` | chosen and rejected transcripts on the same task | the best clean solve against the worst run, if the gap is at least `--margin` |
+
+Cheating episodes never become SFT data, but they make good *rejected* examples. Running the live set with `--include-calibration` gives 53 DPO pairs of an honest fix against a forged test report, which is preference data aimed straight at reward hacking. The grader's own output after `submit` is left out of every transcript, so a model can't learn from it.
 
 ## Judging several models
 
@@ -138,29 +201,21 @@ Claude policies use Anthropic's bash and text editor tools with adaptive thinkin
 
 `gauntlet report --cutoff YYYY-MM-DD` splits every metric into PRs merged before and after a date. Set it to a model's training cutoff. A model that does much better on the older half has probably seen those fixes before.
 
-## Bring any agent: the HTTP env server
+## Fresh tasks every week
 
-`gauntlet serve` puts one task's environment behind three endpoints, so an agent in any language, or on any model provider, can play it without importing this package:
-
-```bash
-gauntlet serve --tasks tasks.jsonl --task prettytable__prettytable-475 --policy my-agent -o runs
-curl -X POST localhost:8765/reset
-curl -X POST localhost:8765/step -d '{"type": "bash", "command": "grep -rn appends src/"}'
-curl -X POST localhost:8765/step -d '{"type": "submit"}'
-```
-
-The episode is graded and recorded exactly like `gauntlet run`. I tested it by playing the prettytable task myself through Claude Code (Claude Opus 5.5) in 7 steps: reproduce the bug, read the loop, fix the off-by-one, rerun the suite, submit. It resolved the task (1/1 F2P, 337/337 P2P), came back clean from Cheat Catcher, and scored a rubric of 1.00 and a reward of 0.979. The reward missed 1.0 only because the fix was written differently from the merged one (`for _ in range(appends)`), which gave a similarity of 0.86. That's also the known weakness of SWE-RL style similarity: a correct patch can still look different.
+The [Live tasks](.github/workflows/live.yml) workflow runs every Monday. It collects the last two weeks of merged PRs from the repos in [`datasets/live-repos.txt`](datasets/live-repos.txt), builds and leak-checks them, validates each one with the calibration policies, and publishes the task set, the SWE-bench export and an HTML report as a build artifact. You can also start it by hand with a different look-back window.
 
 ## Limits
 
 - Python and pytest only.
-- A task is only as good as its PR. Small, well-tested repos give the most tasks per PR collected.
-- Commit messages and PR bodies make weaker statements than real issues. The `statement_source` field records which one each task used.
+- Most merged PRs don't make tasks. Dependency bumps and CI changes are most of them, so small, well-tested repos give the most tasks per PR.
+- Commit messages and PR bodies make weaker statements than real issues. 14 of the 53 live tasks have an issue behind them, and the `statement_source` field says which.
+- A huge suite (packaging, 63k tests) falls back to the PR's own test modules, so P2P guards less of the project for those tasks. `validation.scope_fallback` marks them.
 - Without `GITHUB_TOKEN`, the GitHub API allows 60 requests an hour.
 
 ## Part of Gauntlet
 
-This puts the other Gauntlet pieces together: [sandbox](https://github.com/abhishekcpp007/gauntlet-sandbox) for execution, [repo2env](https://github.com/abhishekcpp007/gauntlet-repo2env) for environments and patch handling, [cheatcatcher](https://github.com/abhishekcpp007/gauntlet-cheatcatcher) for reward hacking, and [timemachine](https://github.com/abhishekcpp007/gauntlet-timemachine) for replays. See [gauntlet](https://github.com/abhishekcpp007/gauntlet) for the whole stack.
+This puts the other Gauntlet pieces together: [sandbox](https://github.com/abhishekcpp007/gauntlet-sandbox) for execution, [repo2env](https://github.com/abhishekcpp007/gauntlet-repo2env) for environments and patch handling, [cheatcatcher](https://github.com/abhishekcpp007/gauntlet-cheatcatcher) for reward hacking, and [timemachine](https://github.com/abhishekcpp007/gauntlet-timemachine) for replays. See [gauntlet](https://github.com/abhishekcpp007/gauntlet) for the whole stack. [DESIGN.md](DESIGN.md) has the decisions behind it.
 
 ## Develop
 

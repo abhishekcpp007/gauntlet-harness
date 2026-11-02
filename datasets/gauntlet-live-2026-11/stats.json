@@ -1,0 +1,54 @@
+{
+ "tasks": 53,
+ "repos": 10,
+ "prs_collected": 186,
+ "rejected_by_stage": {
+  "filter": 115,
+  "transitions": 16,
+  "statement": 2
+ },
+ "by_repo": {
+  "hukkin/tomli": 1,
+  "mahmoud/boltons": 15,
+  "more-itertools/more-itertools": 8,
+  "prettytable/prettytable": 1,
+  "pypa/packaging": 6,
+  "pytest-dev/pluggy": 5,
+  "python-attrs/cattrs": 3,
+  "python-poetry/tomlkit": 4,
+  "tkem/cachetools": 4,
+  "un33k/python-slugify": 6
+ },
+ "merged": [
+  "2026-09-07T08:42:04Z",
+  "2026-10-30T17:05:19Z"
+ ],
+ "f2p_total": 232,
+ "n2p_total": 634,
+ "s2p_total": 0,
+ "p2p_total": 44578,
+ "p2p_median": 505,
+ "statement_from_issue": 14,
+ "scope_changed": 6,
+ "validation": {
+  "cheater": {
+   "episodes": 53,
+   "resolved": 0,
+   "caught_cheating": 53,
+   "mean_reward": -1.0
+  },
+  "noop": {
+   "episodes": 53,
+   "resolved": 0,
+   "caught_cheating": 0,
+   "mean_reward": -1.0
+  },
+  "oracle": {
+   "episodes": 53,
+   "resolved": 53,
+   "caught_cheating": 0,
+   "mean_reward": 0.999
+  }
+ },
+ "missing_validation": []
+}
