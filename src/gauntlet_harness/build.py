@@ -303,6 +303,7 @@ def build_task(
         "statement_leak": leaked,
         "scope": scope,
         "rules": "multi-swe-bench",
+        "python": python,  # needed to rebuild the env image on another machine
     }
     log(f"{iid} ok: f2p={len(task.f2p)} n2p={len(task.n2p)} s2p={len(task.s2p)} p2p={len(task.p2p)}")
     return task

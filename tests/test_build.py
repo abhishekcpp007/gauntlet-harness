@@ -112,3 +112,38 @@ def test_full_suite_with_no_report_falls_back_to_changed_tests(p, monkeypatch):
     assert isinstance(task, HarnessTask), task
     assert task.validation["scope"] == "changed" and "no report" in task.validation["scope_fallback"]
     assert task.f2p == ["tests/test_calc.py::test_div_gives_exact_quotient"]
+
+
+def test_a_task_rebuilds_its_missing_env_image(p):
+    """Task files travel (Gauntlet Live, CI runners), images don't. Booting must rebuild, not pull."""
+    import docker
+
+    from gauntlet_harness.sandboxing import ensure_image
+
+    task = p.results[1].model_copy(update={"image": "gauntlet-harness-env-test:moved"})
+    client = docker.from_env()
+    try:
+        ensure_image(task, p.cache)  # same deps, so it lands on the validated fingerprint
+        assert client.images.get("gauntlet-harness-env-test:moved")
+        drifted = task.model_copy(
+            update={"image": "gauntlet-harness-env-test:drift", "env_fingerprint": "0" * 64}
+        )
+        with pytest.raises(RuntimeError, match="drifted"):
+            ensure_image(drifted, p.cache)
+    finally:
+        for tag in ("gauntlet-harness-env-test:moved", "gauntlet-harness-env-test:drift"):
+            try:
+                client.images.remove(tag)
+            except docker.errors.ImageNotFound:
+                pass
+
+
+def test_parallel_workers_share_one_clone(p, tmp_path):
+    """Seen on the first nightly run: three workers cloned at once and two died on 'File exists'."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from gauntlet_harness.sandboxing import cached_clone
+
+    with ThreadPoolExecutor(6) as pool:
+        repos = list(pool.map(lambda _: cached_clone(str(p.repo), tmp_path), range(6)))
+    assert len({r.path for r in repos}) == 1 and (repos[0].path / ".git").exists()
