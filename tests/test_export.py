@@ -127,3 +127,11 @@ def test_cli_export(tmp_path):
     assert main(["export", "--format", "sft", "--results", str(res), "-o", str(out)]) == 0
     assert json.loads(out.read_text())["tools"][0]["function"]["name"] == "bash"
     assert main(["export", "--format", "sft", "-o", str(out)]) == 2
+
+
+def test_cli_creates_output_folders(tmp_path):
+    tasks = tmp_path / "tasks.jsonl"
+    tasks.write_text(TASK.model_dump_json() + "\n")
+    out = tmp_path / "fresh" / "dir" / "swe.jsonl"
+    assert main(["export", "--format", "swebench", "--tasks", str(tasks), "-o", str(out)]) == 0
+    assert out.exists()

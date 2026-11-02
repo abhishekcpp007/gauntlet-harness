@@ -48,6 +48,13 @@ def _append(path: Path, obj: Any) -> None:
         f.write(obj.model_dump_json() + "\n")
 
 
+def _out(path: str) -> Path:
+    """An output path whose folder exists, so `-o out/prs.jsonl` works on a fresh checkout."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
 def _date(value: str) -> datetime:
     return datetime.fromisoformat(value).replace(tzinfo=UTC)
 
@@ -58,7 +65,7 @@ def _date(value: str) -> datetime:
 def cmd_collect(args: argparse.Namespace) -> int:
     from .github import GitHubClient, RateLimited, prs_from_git
 
-    out = Path(args.output)
+    out = _out(args.output)
     out.write_text("")
     total = 0
     client = GitHubClient()
@@ -95,7 +102,7 @@ def cmd_build(args: argparse.Namespace) -> int:
     from .leakcheck import leakcheck
 
     prs = _read_models(args.prs, PRInfo)
-    out, rej = Path(args.output), Path(args.rejected)
+    out, rej = _out(args.output), _out(args.rejected)
     out.write_text("")
     rej.write_text("")
     client = _claude_client() if args.rubric else None
@@ -220,7 +227,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
 def cmd_export(args: argparse.Namespace) -> int:
     from . import export
 
-    out = Path(args.output)
+    out = _out(args.output)
     if args.format == "swebench":
         if not args.tasks:
             print("error: --format swebench needs --tasks", file=sys.stderr)
