@@ -56,3 +56,20 @@ def test_weighted_sum():
     assert r == pytest.approx(0.5 * 1.0 + 0.5 * 0.2)
     r, b = compute_reward(None, RubricScore(score=1.0), None, SRC_GOLD, SRC_GOLD, cfg)
     assert b["tests"] == 0.0 and r == pytest.approx(0.5)
+
+
+def test_junk_that_fixes_nothing_earns_nothing():
+    """Red-team finding: a junk edit to the gold file scored 0.83 on the rubric and +0.26 overall."""
+    nothing = make_grade(resolved=False, f2p=False, p2p=True)
+    r, b = compute_reward(nothing, RubricScore(score=0.83), "clean", SRC_GOLD, SRC_GOLD, task=make_task())
+    assert r == 0.0 and b["capped_from"] > 0.2
+    assert r > compute_reward(nothing, None, "clean", "", SRC_GOLD)[0]  # still beats an empty patch
+    cfg = RewardConfig(unsolved_reward=None)
+    r, _ = compute_reward(
+        nothing, RubricScore(score=0.83), "clean", SRC_GOLD, SRC_GOLD, cfg, task=make_task()
+    )
+    assert r > 0.2
+    some = make_grade(resolved=False)
+    some.passed["f2p"]["tests/test_ops.py::test_other"] = False  # 1 of 2 targets: progress, no cap
+    r, b = compute_reward(some, RubricScore(score=0.5), "clean", SRC_GOLD, SRC_GOLD, task=make_task())
+    assert r > 0.3 and "capped_from" not in b

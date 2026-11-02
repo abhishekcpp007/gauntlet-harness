@@ -8,6 +8,11 @@
         rubric     = RubricScore.score             (Rubrics as Rewards, Gunjal et al. 2025)
         similarity = SequenceMatcher(candidate, gold) on source diffs (SWE-RL, Wei et al. 2025)
         reward     = w_tests * tests + w_rubric * rubric + w_similarity * similarity
+        capped at unsolved_reward (0) when not one target test passes
+
+The cap closes a hole I found by red-teaming: a junk edit to the right file applies, compiles,
+keeps P2P green and overlaps the gold files, so it scored 0.83 on the rule rubric and earned
++0.26 without fixing anything. Style and similarity only count once something works.
 
 When no rubric score is available its weight is spread over the other two terms in
 proportion, so the reward stays on the same [0, 1] scale.
@@ -30,6 +35,7 @@ class RewardConfig(BaseModel):
     partial_credit: bool = True
     cheat_penalty: float = -1.0
     malformed_penalty: float = -1.0
+    unsolved_reward: float | None = 0.0  # ceiling when no target test passes; None turns the cap off
 
 
 def compute_reward(
@@ -85,4 +91,8 @@ def compute_reward(
     reward = sum(w * scale * breakdown[k] for k, w in weights.items())
     for k, w in weights.items():
         breakdown[f"w_{k}"] = w * scale
+    no_progress = grade is not None and not grade.resolved and grade.target_rate == 0.0
+    if cfg.unsolved_reward is not None and no_progress and reward > cfg.unsolved_reward:
+        breakdown["capped_from"] = reward
+        reward = cfg.unsolved_reward
     return reward, breakdown
