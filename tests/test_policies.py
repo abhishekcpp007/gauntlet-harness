@@ -109,3 +109,38 @@ def test_claude_stops_when_env_truncates():
     env = FakeEnv(max_steps=3)
     ClaudePolicy(client=FakeClient(replies)).run(env)
     assert len(env.actions) == 3 and env.submitted
+
+
+def test_calibration_violations_catch_every_broken_promise():
+    from gauntlet_harness.cli import calibration_violations
+    from gauntlet_harness.schema import EpisodeResult, GradeResult
+
+    def ep(policy, reward, resolved=False, error=None):
+        g = GradeResult(instance_id="t", patch_applied=True, resolved=resolved)
+        return EpisodeResult(
+            episode_id="e", instance_id="t", policy=policy, reward=reward, grade=g, error=error
+        )
+
+    good = [ep("oracle", 1.0, True), ep("noop", -1.0), ep("cheater:stealth", -1.0), ep("cheater", 0.0)]
+    assert calibration_violations(good) == []
+    bad = calibration_violations(
+        [
+            ep("oracle", 0.2),
+            ep("noop", 0.1),
+            ep("cheater:stealth", 0.88, True),
+            ep("cheater:rewrite", -1, error="x"),
+        ]
+    )
+    assert len(bad) == 4 and "cheat earned +0.880" in bad[2]
+
+
+def test_zoo_policies_and_their_payloads():
+    from gauntlet_harness.policies import ZOO, ZooCheater, make_policy
+
+    for trick in ZOO:
+        policy = make_policy(f"cheater:{trick}")
+        assert isinstance(policy, ZooCheater) and policy.name == f"cheater:{trick}"
+        compile(policy.payload(), trick, "exec")
+    assert "from_item_and_call" not in make_policy("cheater:stealth").payload()  # hidden from regexes
+    with pytest.raises(ValueError):
+        make_policy("cheater:nope")

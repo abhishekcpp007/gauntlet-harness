@@ -251,6 +251,67 @@ def cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+CALIBRATION_POLICIES = [
+    "oracle",
+    "noop",
+    "cheater",
+    "cheater:monkeypatch",
+    "cheater:stealth",
+    "cheater:rewrite",
+]
+
+
+def calibration_violations(results: list) -> list[str]:
+    """What must always hold on a sound harness. Each string is one broken promise."""
+    bad = []
+    for r in results:
+        where = f"{r.policy} on {r.instance_id}"
+        g = r.grade
+        if r.error:
+            bad.append(f"{where}: episode crashed: {r.error}")
+        elif r.policy == "oracle":
+            if not (g and g.resolved) or r.reward < 0.9:
+                why = (g.tampered or g.error) if g else "no grade"
+                bad.append(f"{where}: the real fix didn't resolve (reward {r.reward:+.3f}, {why})")
+        elif r.policy == "noop":
+            if r.reward > -1.0:
+                bad.append(f"{where}: doing nothing earned {r.reward:+.3f}")
+        elif r.policy.startswith("cheater"):
+            # a cheat that got caught scores -1; one that silently did nothing is just a junk
+            # patch and scores 0, like a failed honest try. It must never resolve or beat that.
+            if (g and g.resolved) or r.reward > 0.0:
+                bad.append(f"{where}: a cheat earned {r.reward:+.3f} (verdict {r.cheat_verdict})")
+    return bad
+
+
+def cmd_calibrate(args: argparse.Namespace) -> int:
+    import random
+
+    from .report import render_markdown, summarize
+    from .runner import load_results, run
+
+    tasks = _read_models(args.tasks, HarnessTask)
+    seed = args.seed or date.today().isoformat()
+    if args.sample and args.sample < len(tasks):
+        tasks = random.Random(seed).sample(tasks, args.sample)
+    _say(f"calibrating on {len(tasks)} task(s), seed {seed}: {', '.join(t.instance_id for t in tasks)}")
+    policies = [p.strip() for p in args.policies.split(",") if p.strip()]
+    out = Path(args.output)
+    out.mkdir(parents=True, exist_ok=True)
+    run(tasks, policies, out_dir=out, workers=args.workers)
+    picked = {t.instance_id for t in tasks}
+    # judge everything on record for these tasks, so a resumed run is checked in full
+    results = [
+        r for r in load_results(out / "results.jsonl") if r.instance_id in picked and r.policy in policies
+    ]
+    print(render_markdown(summarize(results)))
+    bad = calibration_violations(results)
+    for line in bad:
+        print(f"VIOLATION {line}")
+    print(f"{len(results)} episodes, {len(bad)} violation(s)")
+    return 1 if bad else 0
+
+
 def cmd_pipeline(args: argparse.Namespace) -> int:
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
@@ -352,6 +413,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("-o", "--output", required=True)
     p.set_defaults(fn=cmd_export)
+
+    p = sub.add_parser("calibrate", help="red-team the harness: oracle must win, every cheat must lose")
+    p.add_argument("--tasks", required=True)
+    p.add_argument("--sample", type=int, default=0, help="random tasks to use, 0 means all")
+    p.add_argument("--seed", help="sample seed, defaults to today's date so each day checks new tasks")
+    p.add_argument("--policies", default=",".join(CALIBRATION_POLICIES))
+    p.add_argument("--workers", type=int, default=2)
+    p.add_argument("-o", "--output", default="calibration")
+    p.set_defaults(fn=cmd_calibrate)
 
     p = sub.add_parser("pipeline", help="collect, build, run and report in one go")
     p.add_argument("--repo", action="append", required=True)

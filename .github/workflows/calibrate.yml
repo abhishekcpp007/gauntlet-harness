@@ -1,0 +1,51 @@
+name: Calibrate
+
+# Every night, red-team the harness on real tasks. A few Gauntlet Live tasks are picked at
+# random (seeded by the date, so each night checks different ones), then the oracle, noop and
+# the whole cheater zoo play them. The run fails if the real fix stops resolving, or if any
+# cheat earns more than -1. CI only covers a toy repo; this covers the real dataset, and it
+# catches environment drift too, when a task stops building or passing on its own.
+
+on:
+  schedule:
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+    inputs:
+      sample:
+        description: "tasks to check"
+        default: "4"
+
+permissions:
+  contents: read
+
+jobs:
+  calibrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          for piece in sandbox repo2env timemachine cheatcatcher; do
+            git clone --depth 1 "https://github.com/abhishekcpp007/gauntlet-$piece" "../$piece"
+          done
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync
+      - name: Red-team the harness on real tasks
+        run: |
+          set -o pipefail
+          uv run gauntlet calibrate --tasks datasets/gauntlet-live-2026-11/tasks.jsonl \
+            --sample ${{ inputs.sample || '4' }} --workers 3 -o out | tee out.txt
+      - name: Summary
+        if: always()
+        run: |
+          { echo '## Calibration'; echo; grep -E '^\|' out.txt || true; echo; grep -E '^VIOLATION|violation' out.txt || true; } \
+            >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: calibration-${{ github.run_id }}
+          path: |
+            out/results.jsonl
+            out/trajectories

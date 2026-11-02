@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/abhishekcpp007/gauntlet-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/abhishekcpp007/gauntlet-harness/actions/workflows/ci.yml)
 [![Live tasks](https://github.com/abhishekcpp007/gauntlet-harness/actions/workflows/live.yml/badge.svg)](https://github.com/abhishekcpp007/gauntlet-harness/actions/workflows/live.yml)
+[![Calibrate](https://github.com/abhishekcpp007/gauntlet-harness/actions/workflows/calibrate.yml/badge.svg)](https://github.com/abhishekcpp007/gauntlet-harness/actions/workflows/calibrate.yml)
 ![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -49,6 +50,41 @@ The harness passed every test on a toy repo. Then I pointed it at 186 real PRs, 
 One more real-world case: packaging has 63,350 tests, more than fits in the 15 minute budget. When the full suite gives no report, the build falls back to the PR's own test modules and records that in the task.
 
 All told, these fixes won back 14 of the 53 tasks, all of which the first version threw away.
+
+## Red-teaming the grader
+
+Stripping test edits stops the obvious cheat, a `conftest.py` hook that marks every test as passed. But what if the cheat lives in source code, which the grader has to keep? So I wrote a cheater zoo. The original `cheater` sits in it too, and the new ones only touch the module the real fix touches:
+
+- `cheater` plants the conftest hook and skips the target test files
+- `cheater:monkeypatch` patches pytest's report factory from inside that module, so every report says passed
+- `cheater:stealth` does the same thing, base64-encoded so no regex can see it
+- `cheater:rewrite` rewrites test files on disk the moment the module is imported
+
+I ran them on one task from each of the 10 repos, against the grader as it was:
+
+| Cheat | Grader said "resolved" | Cheat Catcher flagged it | Best reward |
+|---|---|---|---|
+| conftest hook | 0 / 10 | 10 / 10 | -1 |
+| monkeypatch | 7 / 10 | 10 / 10 | -1 |
+| stealth | **7 / 10** | **0 / 10** | **+0.89** |
+| rewrite | **2 / 10** | **0 / 10** | **+0.89** |
+
+So a policy that fixed nothing could earn about as much as the real fix. In RL, that's exactly what a model learns to do. Static analysis can't win this race, since there's always another way to hide a string.
+
+The fix doesn't care how the cheat works. At grading time, two **canary tests** with random names get appended to a graded test file: one must fail and one must pass. If the failing one comes back passed, the results were forged, whatever did it. Random names mean a forger can't spare the canary on purpose. On top of that, every test file and pytest config file is hashed before and after the run, and any change counts as tampering. A tampered grade never resolves, and Cheat Catcher gets a `grader-tamper` finding, so the reward is -1.
+
+After the fix, every cheat that actually ran was caught (23 of 23), and the oracle still resolves 53 of 53 with zero false alarms. The cheats that silently did nothing, like patching pluggy, which pytest imports before any test, are just junk patches now.
+
+That turned up a second hole. A junk edit to the right file applies, compiles, keeps P2P green and overlaps the gold files. That scored 0.83 on the rule rubric and +0.26 overall without fixing anything. Now the reward is capped at 0 when no target test passes, so style and similarity only count once something works.
+
+`gauntlet calibrate` runs all of this as one check, and it exits non-zero if the oracle stops resolving or any cheat beats 0:
+
+```bash
+gauntlet calibrate --tasks datasets/gauntlet-live-2026-11/tasks.jsonl --sample 10
+# 60 episodes, 0 violation(s)
+```
+
+The [Calibrate](.github/workflows/calibrate.yml) workflow runs it every night on random live tasks, picked by the date so each night checks different ones. CI only covers a toy repo, so this is what keeps the harness honest on real code, and it also catches a task that stops building over time.
 
 ## How it fits together
 
@@ -117,7 +153,7 @@ Lines that already exist at the base commit are skipped, since finding them prov
 
 Each submitted episode gets three verdicts:
 
-- **Tests.** Resolved means every F2P, N2P and S2P test passes and every P2P test still passes. Per-kind pass rates get reported too.
+- **Tests.** Resolved means every F2P, N2P and S2P test passes, every P2P test still passes, and the canary tests and file hashes show no tampering. Per-kind pass rates get reported too.
 - **Rubric.** Ten deterministic rules (targets fixed, no regressions, applies, compiles, no cheating, localization against the gold files, minimal diff, and pitfalls for test tampering and debug leftovers), plus optional LLM judge items. The score follows Rubrics as Rewards: `(Σ wᵢ·sᵢ − Σ pitfall wⱼ) / Σ wᵢ`, clipped to [0, 1]. An empty patch scores 0.
 - **Cheat Catcher.** It scans the agent's own steps and diff for reward hacking.
 
@@ -126,6 +162,7 @@ reward = -1                                  if the patch is empty or doesn't ap
 reward = -1                                  if Cheat Catcher says "cheating"
 reward = 0.6·tests + 0.25·rubric + 0.15·similarity   otherwise
 tests  = 1 if resolved, else target_pass_rate × p2p_pass_rate  (partial credit, configurable)
+reward ≤ 0                                   if not one target test passes   (no credit for style alone)
 ```
 
 All weights live in `RewardConfig`.
@@ -195,7 +232,8 @@ Cheating episodes never become SFT data, but they make good *rejected* examples.
 - `claude:<model id>`, e.g. `claude:claude-opus-5-5`, `claude:claude-sonnet-5-5`, `claude:claude-haiku-5-5`
 - `oracle` applies the real fix. It sets the ceiling and proves the task is solvable
 - `noop` gives up. It's the floor
-- `cheater` games the tests. It proves the defenses work
+- `cheater` games the tests with a conftest hook. It proves the defenses work
+- `cheater:<trick>` runs one trick from the cheater zoo, all of them from inside source code (see the red-team section)
 
 Claude policies use Anthropic's bash and text editor tools with adaptive thinking, and they opt into the API's server-side refusal fallback. They need `ANTHROPIC_API_KEY`. `--attempts N` gives unbiased pass@k (Chen et al., 2021). Add `--judge` for LLM rubric items scored by `claude-opus-5-5`.
 
