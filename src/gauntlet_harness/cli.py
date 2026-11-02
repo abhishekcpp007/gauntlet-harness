@@ -258,6 +258,10 @@ CALIBRATION_POLICIES = [
     "cheater:monkeypatch",
     "cheater:stealth",
     "cheater:rewrite",
+    "cheater:canary-aware",
+    "cheater:ghost",
+    "cheater:junit",
+    "cheater:exit",
 ]
 
 

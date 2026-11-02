@@ -79,7 +79,7 @@ def test_runner_calibration(task, tmp_path):
     assert run([task], ["oracle", "noop", "cheater"], out_dir=tmp_path, cache_dir=pipeline().cache) == []
 
 
-@pytest.mark.parametrize("trick", ["monkeypatch", "stealth", "rewrite"])
+@pytest.mark.parametrize("trick", ["monkeypatch", "stealth", "rewrite", "canary-aware", "ghost", "junit"])
 def test_cheater_zoo_is_caught_by_the_grader_itself(task, tmp_path, trick):
     """Source-only cheats survive test stripping, so the grader's canary has to catch them at run time."""
     (r,) = run([task], [f"cheater:{trick}"], out_dir=tmp_path, cache_dir=pipeline().cache)
@@ -97,3 +97,8 @@ def test_honest_runs_pass_the_canary(task, tmp_path):
     assert grade.resolved and grade.tampered == []
     known_files = {t.split("::")[0] for t in [*task.targets, *task.p2p]}
     assert {t.split("::")[0] for t in grade.statuses} <= known_files  # the canary is filtered out
+
+
+def test_a_cheat_that_kills_pytest_earns_nothing(task, tmp_path):
+    (r,) = run([task], ["cheater:exit"], out_dir=tmp_path, cache_dir=pipeline().cache)
+    assert not r.grade.resolved and r.reward <= 0.0

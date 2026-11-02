@@ -7,6 +7,7 @@ its status after all of that is PASSED.
 
 from __future__ import annotations
 
+import ast
 import posixpath
 import secrets
 import shlex
@@ -25,11 +26,36 @@ def _changed_python_files(patch: str) -> list[str]:
     return sorted(set(files))
 
 
-# Words for canary names, so a canary looks like any other test and can't be singled out.
-_WORDS = (
-    "parse", "merge", "render", "split", "encode", "decode", "lookup", "update", "format",
-    "convert", "resolve", "compare", "flatten", "window", "header", "cache", "range", "quote",
+# Name endings for canaries. A canary borrows a real test's name from its file and adds one of
+# these, so its name looks like a sibling of the tests around it.
+_SUFFIXES = (
+    "roundtrip", "regression", "edge", "empty", "unicode", "twice", "again", "basic", "simple",
+    "default", "nested", "single", "large", "small", "reverse", "order", "copy", "none",
 )  # fmt: skip
+_WORDS = ("alpha", "beta", "delta", "omega", "kappa", "sigma", "theta", "gamma", "zeta", "lambda")
+
+
+def _body(rng, ok: bool) -> list[str]:
+    """A small builtins-only test body that passes when `ok`, fails otherwise.
+
+    Several shapes, picked at random for each canary, so the failing one and the passing one
+    can't be told apart by how they're written.
+    """
+    n = rng.randint(3, 40)
+    w = rng.choice(_WORDS)
+    off = rng.choice((1, 2, 3))
+    shapes = [
+        ([f"items = [{n + 2}, {n}, {n + 1}]"], "sorted(items)[0]", n, n + off),
+        ([f'text = "{w}"'], "text.upper()", f'"{w.upper()}"', f'"{w.upper()[:-1]}"'),
+        ([f"total = sum(range({n}))"], "total", n * (n - 1) // 2, n * (n - 1) // 2 + off),
+        ([f'mapping = {{"{w}": {n}}}'], f'mapping.get("{w}")', n, n - off),
+        ([f'parts = "{w}-{n}".split("-")'], "len(parts)", 2, 2 + off),
+        ([f'text = "{w}"'], "text[::-1]", f'"{w[::-1]}"', f'"{w}"'),
+        ([f"pair = ({n}, {n + off})"], "max(pair) - min(pair)", off, off + 1),
+    ]
+    setup, expr, good, bad = rng.choice(shapes)
+    return [*setup, f"assert {expr} == {good if ok else bad}"]
+
 
 # What the integrity check hashes before and after the run: anything that decides what pytest
 # collects or how it reports. A change during the run means something rewrote them.
@@ -40,28 +66,116 @@ _WATCHED = (
 
 
 class Canary:
-    """Two tests with random names appended to a graded test file at grading time.
+    """Tests planted in a graded test file at grading time, half that must fail and half that must pass.
 
-    One must fail and one must pass. A run that reports the failing one as passed has had its
-    results forged, however that was done: a conftest hook, a monkeypatched pytest inside the
-    source, an obfuscated exec. Random names mean a forger can't spare the canary on purpose.
+    A run that reports a must-fail canary as passed has had its results forged, however that was
+    done: a conftest hook, a monkeypatched pytest inside the source, an obfuscated exec, a
+    rewritten JUnit file. The harness is open source, so a forger can read this class. The
+    canaries are built to be useless to that reader: names borrowed from the file's own tests,
+    bodies drawn from several shapes for both kinds, and spots scattered between the file's
+    existing tests rather than a fixed place. A forger that spares "whatever looks planted"
+    has nothing reliable to look for.
     They go into the file that holds a graded test, because that file is collected under any
     pytest config (testpaths, python_files) or the task couldn't be graded at all.
     """
 
-    def __init__(self, task: HarnessTask) -> None:
+    def __init__(self, task: HarnessTask, *, count: int = 2) -> None:
         graded = [*task.targets, *task.p2p]
         self.path = graded[0].split("::")[0] if graded else (task.test_files or ["tests/test_x.py"])[0]
-        rng = secrets.SystemRandom()
-        b, c = rng.sample(_WORDS, 2)
-        tag = secrets.token_hex(3)
-        n = rng.randint(10, 99)
-        self.fail_name, self.pass_name = f"test_{b}_{tag}", f"test_{c}_{tag}"
-        self.source = (
-            f"\n\n\ndef {self.fail_name}():\n    value = {n}\n    assert value == {n + 1}\n\n\n"
-            f"def {self.pass_name}():\n    value = {n}\n    assert value == {n}\n"
-        )
-        self.fail_id, self.pass_id = f"{self.path}::{self.fail_name}", f"{self.path}::{self.pass_name}"
+        self.graded = [t.split("[")[0] for t in graded if t.startswith(f"{self.path}::")]
+        self.count = count
+        self.rng = secrets.SystemRandom()
+        self.fail_ids: list[str] = []
+        self.pass_ids: list[str] = []
+
+    @property
+    def ids(self) -> set[str]:
+        return {*self.fail_ids, *self.pass_ids}
+
+    def build(self, current: str) -> str:
+        """Return `current` with the canaries spliced in among the graded tests.
+
+        A canary lives where this file's graded tests live: at module level next to plain test
+        functions, or as a method inside a graded test class (unittest style included). A
+        file of class-based tests with stray top-level functions would give them away.
+        """
+        rng = self.rng
+        try:
+            tree = ast.parse(current)
+        except SyntaxError:
+            tree = None
+        body = tree.body if tree else []
+        lines = current.splitlines(keepends=True)
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        imported = []
+        for node in body:
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                imported.extend((a.asname or a.name).split(".")[0] for a in node.names if a.name != "*")
+
+        def start(node: ast.stmt) -> int:
+            first = min([node.lineno, *(d.lineno for d in getattr(node, "decorator_list", []))]) - 1
+            while first > 0 and lines[first - 1].lstrip().startswith("#"):
+                first -= 1  # keep a comment attached to the statement below it
+            return first
+
+        # Containers: (class name or None, indent, test names in it, spots, existing names).
+        containers = []
+        graded = {t.split("::")[1] if t.count("::") == 2 else None for t in self.graded}
+        if None in graded or not tree:
+            last_import = max(
+                (i for i, n in enumerate(body) if isinstance(n, (ast.Import, ast.ImportFrom))), default=-1
+            )
+            spots = [(start(n), 1) for n in body[last_import + 1 :]] + [(len(lines), 1)]
+            names = [n.name for n in body if isinstance(n, ast.FunctionDef) and n.name.startswith("test")]
+            existing = {n.name for n in body if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
+            containers.append((None, "", names, spots, existing))
+        for node in body:
+            if not isinstance(node, ast.ClassDef) or node.name not in graded or node.decorator_list:
+                continue  # a decorated class may parametrize every method in it
+            stmts = node.body
+            docstring = isinstance(stmts[0], ast.Expr) and isinstance(
+                getattr(stmts[0], "value", None), ast.Constant
+            )
+            spots = [(start(n), 0) for n in stmts[1 if docstring else 0 :]] + [(node.end_lineno, 0)]
+            indent = " " * stmts[-1].col_offset
+            names = [n.name for n in stmts if isinstance(n, ast.FunctionDef) and n.name.startswith("test")]
+            existing = {n.name for n in stmts if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
+            containers.append((node.name, indent, names, spots, existing))
+
+        inserts: list[tuple[int, int, str]] = []
+        kinds = [False] * self.count + [True] * self.count
+        rng.shuffle(kinds)
+        for ok in kinds:
+            cls, indent, stems, spots, existing = rng.choice(containers)
+            while True:
+                stem = rng.choice(stems) if stems else f"test_{rng.choice(_WORDS)}"
+                name = f"{stem}_{rng.choice(_SUFFIXES)}"
+                if name not in existing:
+                    existing.add(name)
+                    break
+            code = _body(rng, ok)
+            if imported and rng.random() < 0.7:
+                code.insert(0, f"assert {rng.choice(imported)} is not None")
+            head = f"{indent}def {name}(self):\n" if cls else f"def {name}():\n"
+            block = head + "".join(f"{indent}    {line}\n" for line in code)
+            at, top = rng.choice(spots)
+            # match the file's own spacing: two blank lines around a function, one around a method
+            gap = "\n\n" if top else "\n"
+            text = f"{gap}{block}" if at >= len(lines) or (cls and at == spots[-1][0]) else f"{block}{gap}"
+            inserts.append((at, top, text))
+            test_id = f"{self.path}::{cls}::{name}" if cls else f"{self.path}::{name}"
+            (self.pass_ids if ok else self.fail_ids).append(test_id)
+
+        # at a shared line a method closes its class before a module-level function starts
+        inserts.sort(key=lambda x: (x[0], x[1]))
+        out, pos = [], 0
+        for at, _, text in inserts:
+            out.extend(lines[pos:at])
+            out.append(text)
+            pos = max(pos, at)
+        out.extend(lines[pos:])
+        return "".join(out)
 
     def plant(self, sb, workdir: str) -> None:
         full = posixpath.join(workdir, self.path)
@@ -69,17 +183,17 @@ class Canary:
             current = sb.read_text(full)
         except FileNotFoundError:
             current = ""
-        sb.write_file(full, current + self.source)
+        sb.write_file(full, self.build(current))
 
     def check(self, statuses: dict) -> list[str]:
         if not statuses:
             return []  # no report at all already fails the grade
         problems = []
-        if statuses.get(self.fail_id) == Status.PASSED:
+        if any(statuses.get(t) == Status.PASSED for t in self.fail_ids):
             problems.append("a canary test that must fail was reported as passed: test results were forged")
-        if self.fail_id not in statuses and self.pass_id not in statuses:
+        if not any(t in statuses for t in self.ids):
             problems.append("the canary tests vanished from the report: collection was tampered with")
-        elif statuses.get(self.pass_id) not in (Status.PASSED, None):
+        elif any(statuses.get(t) not in (Status.PASSED, None) for t in self.pass_ids):
             problems.append("a canary test that must pass didn't: the test runner was tampered with")
         return problems
 
@@ -138,7 +252,7 @@ def grade_patch(task: HarnessTask, patch: str, *, cache_dir=None, timeout: float
     changed = sorted(p for p in before.keys() | after.keys() if before.get(p) != after.get(p))
     if changed:
         tampered.append(f"test or pytest config files changed during the run: {', '.join(changed[:5])}")
-    statuses = {t: st for t, st in statuses.items() if t not in (canary.fail_id, canary.pass_id)}
+    statuses = {t: st for t, st in statuses.items() if t not in canary.ids}
 
     def ok(test: str) -> bool:
         return statuses.get(test) == Status.PASSED

@@ -77,11 +77,35 @@ After the fix, every cheat that actually ran was caught (23 of 23), and the orac
 
 That turned up a second hole. A junk edit to the right file applies, compiles, keeps P2P green and overlaps the gold files. That scored 0.83 on the rule rubric and +0.26 overall without fixing anything. Now the reward is capped at 0 when no target test passes, so style and similarity only count once something works.
 
+### Round two: a cheat that reads the grader
+
+This repo is public, so a cheat can read the canary code too. I wrote the cheat a smart model would write after reading it. `cheater:canary-aware` forces every test to pass except the ones that look planted: the canary's fixed `value = N / assert value == M` body, or the last two tests of a file, where the canary used to be appended. `cheater:ghost` is the same thing hidden in base64. Two blunter tricks joined the zoo as well. `cheater:junit` lets pytest run honestly and then cuts every failure out of the JUnit file at interpreter exit, and `cheater:exit` kills Python the moment the module loads.
+
+Against the round-one canary:
+
+| Cheat | Grader said "resolved" | Cheat Catcher flagged it | Best reward |
+|---|---|---|---|
+| canary-aware | **6 / 10** | 10 / 10 | -1 |
+| ghost | **7 / 10** | **0 / 10** | **+0.88** |
+| junit | 0 / 10 | 7 / 10 | 0 |
+| exit | 0 / 10 | 0 / 10 | 0 |
+
+So the canary was beaten by anyone who read it. The rewrite makes it useless to that reader:
+
+- names are borrowed from real tests in the same file (`test_parse` gets a `test_parse_roundtrip` sibling), with no random hex tag
+- bodies come from several builtins-only shapes, the same pool for must-fail and must-pass, and most of them touch a name the file imports
+- there are two of each kind now, so a forger has to spare every failing one
+- they land at random spots between existing tests, spaced like the file, and inside a graded test class when that's where the file's tests live
+
+That last one came out of a rerun. Ghost still won 2 of 10 because more-itertools and cachetools keep their tests in `unittest` classes, and a top-level function in that file stood out. Now canaries go in as methods of a graded class, never a decorated one, since a class-level `parametrize` would break them.
+
+After that, ghost and canary-aware resolved 0 of 60 tries across 3 runs, and the oracle still resolves 53 of 53 with zero false alarms. There's a test for every tell the cheat used.
+
 `gauntlet calibrate` runs all of this as one check, and it exits non-zero if the oracle stops resolving or any cheat beats 0:
 
 ```bash
 gauntlet calibrate --tasks datasets/gauntlet-live-2026-11/tasks.jsonl --sample 10
-# 60 episodes, 0 violation(s)
+# 100 episodes, 0 violation(s)
 ```
 
 The [Calibrate](.github/workflows/calibrate.yml) workflow runs it every night on random live tasks, picked by the date so each night checks different ones. CI only covers a toy repo, so this is what keeps the harness honest on real code, and it also catches a task that stops building over time.
