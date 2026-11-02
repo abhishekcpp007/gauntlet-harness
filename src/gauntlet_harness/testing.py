@@ -17,6 +17,7 @@ repeats are flaky and get dropped from every list, so they never decide a grade.
 from __future__ import annotations
 
 import shlex
+import xml.etree.ElementTree as ET
 
 from gauntlet_repo2env import PatchFailed, parse_junit
 from gauntlet_sandbox import Sandbox
@@ -71,7 +72,11 @@ def run_suite(
         return {}
     finally:
         sb.exec(f"rm -f {JUNIT_PATH}")
-    return {test_id: _STATUS[status] for test_id, status in parse_junit(xml_text).items()}
+    try:
+        parsed = parse_junit(xml_text)
+    except ET.ParseError:  # pytest was killed mid-write (timeout, OOM): same as no report
+        return {}
+    return {test_id: _STATUS[status] for test_id, status in parsed.items()}
 
 
 def apply_patch(sb: Sandbox, workdir: str, patch: str, name: str) -> None:

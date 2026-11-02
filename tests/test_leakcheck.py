@@ -71,3 +71,100 @@ def test_agent_sandbox_shape(p):
         assert graded.exec("ls /tmp/gauntlet-patches 2>/dev/null").stdout.strip() == ""
     finally:
         graded.close()
+
+
+def test_stdlib_hits_are_not_leaks():
+    from gauntlet_harness.leakcheck import from_base_image
+
+    assert from_base_image("/usr/local/lib/python3.12/unittest/mock.py")
+    assert from_base_image("/usr/lib/python3.11/idlelib/rpc.py")
+    assert not from_base_image("/usr/local/lib/python3.12/site-packages/cachetools/__init__.py")
+    assert not from_base_image("/workspace/repo/src/cachetools/__init__.py")
+    assert not from_base_image("/root/.cache/pip/x.py")
+
+
+def test_base_lookup_fails_loudly_on_a_missing_commit(tmp_path):
+    import subprocess
+
+    from gauntlet_harness.leakcheck import _present_at_base
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "a.py").write_text("def test_old(\n")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x"],
+        check=True,
+    )
+    sha = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"], capture_output=True, text=True
+    ).stdout
+    assert _present_at_base(tmp_path, sha.strip(), ["def test_old(", "def test_new("]) == {"def test_old("}
+    assert _present_at_base(tmp_path, sha.strip(), ["def test_new("]) == set()
+    with pytest.raises(RuntimeError):
+        _present_at_base(tmp_path, "0" * 40, ["def test_old("])
+
+
+def test_installed_packages_only_count_when_they_are_the_project():
+    from gauntlet_harness.leakcheck import counts_as_leak, project_packages
+    from gauntlet_harness.schema import HarnessTask, PRInfo
+
+    task = HarnessTask(
+        instance_id="pypa__packaging-1",
+        repo="r",
+        pr=PRInfo(repo="pypa/packaging", number=1, title="t", url="u"),
+        base_commit="a",
+        solution_commit="b",
+        problem_statement="s",
+        statement_source="pr",
+        image="i",
+        env_fingerprint="f",
+        gold_patch="--- a/src/packaging/specifiers.py\n+++ b/src/packaging/specifiers.py\n"
+        "--- a/tool.py\n+++ b/tool.py\n",
+        test_patch="",
+        test_files=[],
+    )
+    pkgs = project_packages(task)
+    assert pkgs == {"packaging", "tool"}
+    site = "/usr/local/lib/python3.12/site-packages"
+    # real packaging bugs seen on packaging PRs 1457 and 1458: idioms in other libraries
+    assert not counts_as_leak(f"{site}/_pytest/_code/code.py", pkgs)
+    assert not counts_as_leak(f"{site}/hypothesis/internal/reflection.py", pkgs)
+    # a copy of the project itself does count, installed or vendored
+    assert counts_as_leak(f"{site}/packaging/specifiers.py", pkgs)
+    assert counts_as_leak(f"{site}/pip/_vendor/packaging/specifiers.py", pkgs)
+    assert counts_as_leak(f"{site}/packaging-26.1.dist-info/RECORD", pkgs)
+    # anywhere outside installed packages always counts
+    assert counts_as_leak("/workspace/repo/src/packaging/x.py", pkgs)
+    assert counts_as_leak("/root/.cache/pip/http/x", pkgs)
+
+
+def test_imports_are_not_distinctive():
+    from gauntlet_harness.leakcheck import distinctive_added_lines
+
+    patch = (
+        "+from typing import TYPE_CHECKING, TypeVar\n"
+        "+import collections.abc as cabc\n"
+        "+    return _canonical_spec(self._spec)\n"
+    )
+    assert distinctive_added_lines(patch) == ["return _canonical_spec(self._spec)"]
+
+
+def test_base_lookup_sees_needles_nested_in_other_needles(tmp_path):
+    """cattrs PR 777: the new test name is a substring of the hidden def line, and both exist at base."""
+    import subprocess
+
+    from gauntlet_harness.leakcheck import _present_at_base
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "t.py").write_text("def test_type_names_with_quotes():\n    pass\n")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x"],
+        check=True,
+    )
+    needles = [
+        "def test_type_names_with_quotes():",
+        "def test_type_names_with_quotes(",
+        "def test_brand_new(",
+    ]
+    assert _present_at_base(tmp_path, "HEAD", needles) == set(needles[:2])

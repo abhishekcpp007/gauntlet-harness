@@ -80,3 +80,35 @@ def test_shared_env_fingerprint(p):
     fp_311, _ = env_fingerprint(repo, task.base_commit, "3.11")
     assert fp_base == fp_head == task.env_fingerprint  # same deps, same image
     assert fp_311 != fp_base
+
+
+def test_build_cli_survives_a_crashing_pr(tmp_path, monkeypatch):
+    import gauntlet_harness.build as build
+    from gauntlet_harness.cli import main
+    from gauntlet_harness.schema import PRInfo
+
+    def boom(*a, **k):
+        raise ValueError("no element found")
+
+    monkeypatch.setattr(build, "build_task", boom)
+    prs = tmp_path / "prs.jsonl"
+    prs.write_text(PRInfo(repo="o/r", number=3, title="t", url="u").model_dump_json() + "\n")
+    rej = tmp_path / "rej.jsonl"
+    args = ["build", "--prs", str(prs), "-o", str(tmp_path / "t.jsonl"), "--rejected", str(rej)]
+    assert main(args) == 1  # no tasks, but no traceback either
+    assert '"stage":"crash"' in rej.read_text() and "o__r-3" in rej.read_text()
+
+
+def test_full_suite_with_no_report_falls_back_to_changed_tests(p, monkeypatch):
+    import gauntlet_harness.build as build
+
+    real = build.run_suite
+
+    def huge_suite(sb, workdir, scope, **kw):
+        return {} if not scope else real(sb, workdir, scope, **kw)  # the full suite "times out"
+
+    monkeypatch.setattr(build, "run_suite", huge_suite)
+    task = build.build_task(p.prs[1], cache_dir=p.cache, repo_url=str(p.repo), scope="full")
+    assert isinstance(task, HarnessTask), task
+    assert task.validation["scope"] == "changed" and "no report" in task.validation["scope_fallback"]
+    assert task.f2p == ["tests/test_calc.py::test_div_gives_exact_quotient"]

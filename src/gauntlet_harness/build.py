@@ -260,6 +260,25 @@ def build_task(
     except (PatchFailed, SandboxError) as e:
         return reject("runs", str(e)[:2000])
 
+    # A suite too big for the time budget (packaging has 60k+ tests) gets killed before pytest
+    # writes its report, so every run comes back empty. Fall back to the PR's own test modules.
+    if scope == "full" and not run and not test and not any(fixes):
+        log(f"{iid}: the full suite gave no report in {test_timeout:.0f}s, retrying on the changed tests")
+        retry = build_task(
+            pr,
+            cache_dir=cache_dir,
+            python=python,
+            scope="changed",
+            fix_runs=fix_runs,
+            strict_statement=strict_statement,
+            repo_url=repo_url,
+            test_timeout=test_timeout,
+            log=log,
+        )
+        if isinstance(retry, HarnessTask):
+            retry.validation["scope_fallback"] = f"full suite gave no report within {test_timeout:.0f}s"
+        return retry
+
     # 5. transitions
     trans = classify(run, test, fixes)
     runs_summary = {"run": summarize(run), "test": summarize(test), "fix": [summarize(f) for f in fixes]}

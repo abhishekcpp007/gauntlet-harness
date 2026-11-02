@@ -20,6 +20,7 @@ from .schema import HarnessTask
 
 MIN_LINE = 20
 _BORING = re.compile(r"^[\W_]*$|^(?:return|pass|else:|try:|finally:|continue|break)\b.{0,12}$")
+_IMPORT = re.compile(r"^(?:from\s+\S+\s+)?import\s")  # imports name things, they don't identify a fix
 _TEST_DEF = re.compile(r"^\+\s*(?:async\s+)?def\s+(test\w*)\s*\(", re.MULTILINE)
 
 
@@ -53,7 +54,13 @@ def distinctive_added_lines(patch: str, *, min_len: int = MIN_LINE) -> list[str]
     seen: set[str] = set()
     out: list[str] = []
     for line in added:
-        if len(line) < min_len or line in removed or line in seen or _BORING.match(line):
+        if (
+            len(line) < min_len
+            or line in removed
+            or line in seen
+            or _BORING.match(line)
+            or _IMPORT.match(line)
+        ):
             continue
         if not re.search(r"[A-Za-z0-9]", line):
             continue
@@ -78,27 +85,56 @@ def _present_at_base(repo_path: Path, sha: str, needles: list[str]) -> set[str]:
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
         f.write("\n".join(needles) + "\n")
         pattern_file = f.name
+    # whole matching lines, not -o: -o prints one match per spot, so a needle that is a substring
+    # of another needle (a test name inside its own def line) would never be reported
+    cmd = ["git", "-C", str(repo_path), "grep", "-F", "-h", "-I", "--no-color", "-f", pattern_file, sha]
     try:
-        proc = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repo_path),
-                "grep",
-                "-F",
-                "-h",
-                "-o",
-                "-I",
-                "--no-color",
-                "-f",
-                pattern_file,
-                sha,
-            ],
-            capture_output=True,
-        )
+        proc = subprocess.run(cmd, capture_output=True)
+        if proc.returncode > 1:  # 1 is "no match"; anything above is an error, usually a missing commit
+            subprocess.run(["git", "-C", str(repo_path), "fetch", "-q", "origin", sha], capture_output=True)
+            proc = subprocess.run(cmd, capture_output=True)
+        if proc.returncode > 1:
+            # failing open here would flag every pre-existing line as a leak, or worse, hide one
+            raise RuntimeError(f"git grep at {sha} failed: {proc.stderr.decode(errors='replace')[:300]}")
     finally:
         Path(pattern_file).unlink(missing_ok=True)
-    return {line for line in proc.stdout.decode(errors="replace").splitlines() if line}
+    lines = proc.stdout.decode(errors="replace").splitlines()
+    return {n for n in needles if any(n in line for line in lines)}
+
+
+# Python's own stdlib ships with the base image, which predates every PR, so a line found
+# there is a common idiom and can't be this PR's fix. site-packages is not exempt.
+_STDLIB = re.compile(r"^/usr/(local/)?lib/python3\.\d+/(?!site-packages/|dist-packages/)")
+
+
+def from_base_image(path: str) -> bool:
+    return bool(_STDLIB.match(path))
+
+
+def project_packages(task: HarnessTask) -> set[str]:
+    """Import names the PR's code lives under: src/packaging/x.py and packaging/x.py give packaging."""
+    names: set[str] = set()
+    for path in re.findall(r"^\+\+\+ b/(\S+\.py)$", task.gold_patch, re.MULTILINE):
+        parts = [p for p in path.split("/") if p]
+        if parts and parts[0] == "src":
+            parts = parts[1:]
+        if parts:
+            names.add(parts[0] if len(parts) > 1 else parts[0].removesuffix(".py"))
+    return names
+
+
+def counts_as_leak(path: str, packages: set[str]) -> bool:
+    """Whether a needle found at `path` means something. Third-party code shares idioms with every
+    project (`return self.__class__(`), so installed packages only count when they are a copy of
+    this project itself, from PyPI or vendored (pip/_vendor/packaging). Everything else counts."""
+    if from_base_image(path):
+        return False
+    parts = path.split("/")
+    for marker in ("site-packages", "dist-packages"):
+        if marker in parts:
+            inside = parts[parts.index(marker) + 1 :]
+            return any(seg in packages or seg.split("-")[0] in packages for seg in inside)
+    return True
 
 
 def leakcheck(task: HarnessTask, *, cache_dir: Path | None = None, grep_timeout: int = 180) -> LeakReport:
@@ -119,6 +155,7 @@ def leakcheck(task: HarnessTask, *, cache_dir: Path | None = None, grep_timeout:
     gold = [n for n in gold if n not in at_base]
     names = [n for n in names if n not in at_base]
     needles = [*dict.fromkeys([*hidden, *gold, *names])]
+    packages = project_packages(task)
 
     sb = boot(task, apply_tests=False, baseline_git=True, record=False, cache_dir=cache_dir)
     try:
@@ -166,7 +203,7 @@ def leakcheck(task: HarnessTask, *, cache_dir: Path | None = None, grep_timeout:
             hits: dict[str, set[str]] = {}
             for line in res.stdout.splitlines():
                 path, _, match = line.partition(":")
-                if match:
+                if match and counts_as_leak(path, packages):
                     hits.setdefault(match, set()).add(path)
             timed_out = res.timed_out or res.exit_code == 124
 

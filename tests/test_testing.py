@@ -101,3 +101,16 @@ def test_statement_prefers_issue_text():
     assert problem_statement(pr) == ("Fix it\n\nFixes #2. Changed foo()", "pr")
     pr.issue_texts[2] = "Crash on empty input\n\n<!-- template -->Steps to reproduce"
     assert problem_statement(pr) == ("Crash on empty input\n\nSteps to reproduce", "issue")
+
+
+def test_truncated_junit_counts_as_no_report():
+    class FakeSb:
+        def exec(self, *a, **k):
+            return None
+
+        def read_text(self, path):
+            return ""  # pytest died before writing anything
+
+    from gauntlet_harness.testing import run_suite
+
+    assert run_suite(FakeSb(), "/w", None) == {}
