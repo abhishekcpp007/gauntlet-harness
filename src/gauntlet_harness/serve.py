@@ -86,6 +86,11 @@ class EnvServer:
                     "policy": self.policy,
                     "messages": self.transcript,
                     "actions": self.env.actions,
+                    "prompt": getattr(self.env, "prompt", ""),
+                    "steps": [
+                        {"action": a, "obs": o}
+                        for a, o in zip(self.env.actions, getattr(self.env, "observations", []), strict=False)
+                    ],
                     "reward": result.reward,
                     "reward_breakdown": result.reward_breakdown,
                     "resolved": bool(result.grade and result.grade.resolved),

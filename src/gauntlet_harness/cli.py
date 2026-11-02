@@ -5,6 +5,7 @@ gauntlet build    --prs prs.jsonl -o tasks.jsonl
 gauntlet leakcheck --tasks tasks.jsonl
 gauntlet run      --tasks tasks.jsonl --policies oracle,noop,claude:claude-opus-5-5 --attempts 3 -o runs/
 gauntlet report   --results runs/results.jsonl --cutoff 2026-06-01
+gauntlet export   --format sft --results runs/results.jsonl -o sft.jsonl
 gauntlet pipeline --repo pallets/click --merged-after 2026-06-01 --policies ... -o runs/
 """
 
@@ -101,7 +102,11 @@ def cmd_build(args: argparse.Namespace) -> int:
     kept = 0
     for pr in prs:
         _say(f"{pr.repo}#{pr.number}: {pr.title[:70]}")
-        result = build_task(pr, python=args.python, scope=args.scope, fix_runs=args.fix_runs, log=_say)
+        try:
+            result = build_task(pr, python=args.python, scope=args.scope, fix_runs=args.fix_runs, log=_say)
+        except Exception as e:  # one broken PR shouldn't sink the batch
+            iid = f"{pr.repo.replace('/', '__')}-{pr.number}"
+            result = Rejected(instance_id=iid, stage="crash", reason=f"{type(e).__name__}: {e}"[:500])
         if isinstance(result, Rejected):
             _say(f"  rejected at {result.stage}: {result.reason}")
             _append(rej, result)
@@ -113,7 +118,9 @@ def cmd_build(args: argparse.Namespace) -> int:
             if not report.ok:
                 bad = [name for name, c in report.checks.items() if not c.ok]
                 _say(f"  rejected at leak: {', '.join(bad)}")
-                _append(rej, Rejected(instance_id=task.instance_id, stage="leak", reason=", ".join(bad)))
+                info = {name: report.checks[name].detail for name in bad}
+                why = Rejected(instance_id=task.instance_id, stage="leak", reason=", ".join(bad), detail=info)
+                _append(rej, why)
                 continue
         if client is not None:
             from .judge import generate_rubric
@@ -210,6 +217,33 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_export(args: argparse.Namespace) -> int:
+    from . import export
+
+    out = Path(args.output)
+    if args.format == "swebench":
+        if not args.tasks:
+            print("error: --format swebench needs --tasks", file=sys.stderr)
+            return 2
+        rows = (export.to_swebench(t) for t in _read_models(args.tasks, HarnessTask))
+    else:
+        if not args.results:
+            print(f"error: --format {args.format} needs --results", file=sys.stderr)
+            return 2
+        from .runner import load_results
+
+        results = load_results(Path(args.results))
+        cal = args.include_calibration
+        rows = {
+            "sft": lambda: export.sft_rows(results, min_reward=args.min_reward, include_calibration=cal),
+            "grpo": lambda: export.grpo_rows(results, include_calibration=cal),
+            "dpo": lambda: export.dpo_rows(results, margin=args.margin, include_calibration=cal),
+        }[args.format]()
+    n = export.write_jsonl(rows, out)
+    print(f"wrote {n} {args.format} rows to {out}")
+    return 0
+
+
 def cmd_pipeline(args: argparse.Namespace) -> int:
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
@@ -299,6 +333,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--max-steps", type=int, default=60)
     p.add_argument("-o", "--output", default="runs")
     p.set_defaults(fn=cmd_serve)
+
+    p = sub.add_parser("export", help="tasks to SWE-bench format, episodes to SFT / GRPO / DPO data")
+    p.add_argument("--format", choices=["swebench", "sft", "grpo", "dpo"], required=True)
+    p.add_argument("--tasks", help="tasks.jsonl (swebench)")
+    p.add_argument("--results", help="results.jsonl (sft, grpo, dpo)")
+    p.add_argument("--min-reward", type=float, default=0.5, help="sft: lowest reward kept")
+    p.add_argument("--margin", type=float, default=0.5, help="dpo: smallest chosen/rejected reward gap")
+    p.add_argument(
+        "--include-calibration", action="store_true", help="keep oracle, noop and cheater episodes"
+    )
+    p.add_argument("-o", "--output", required=True)
+    p.set_defaults(fn=cmd_export)
 
     p = sub.add_parser("pipeline", help="collect, build, run and report in one go")
     p.add_argument("--repo", action="append", required=True)

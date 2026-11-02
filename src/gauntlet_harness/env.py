@@ -85,6 +85,8 @@ class SWEEnv:
         self.sb: Sandbox | None = None
         self.steps = 0
         self.actions: list[dict[str, Any]] = []
+        self.observations: list[str] = []  # one per action, what the agent saw back
+        self.prompt = ""
         self.result: EpisodeResult | None = None
         self._agent_start = 0
         self._started = 0.0
@@ -103,7 +105,7 @@ class SWEEnv:
             cache_dir=self.cache_dir,
         )
         self._agent_start = len(self.sb.trajectory) if self.sb.trajectory else 0
-        self.steps, self.actions, self.result = 0, [], None
+        self.steps, self.actions, self.observations, self.result = 0, [], [], None
         self._started = time.time()
         obs = INSTRUCTIONS.format(
             repo=self.task.pr.repo,
@@ -115,9 +117,15 @@ class SWEEnv:
             "workdir": self.task.workdir,
             "max_steps": self.max_steps,
         }
+        self.prompt = obs
         return obs, info
 
     def step(self, action: dict[str, Any]) -> tuple[str, float, bool, bool, dict[str, Any]]:
+        out = self._step(action)
+        self.observations.append(out[0])
+        return out
+
+    def _step(self, action: dict[str, Any]) -> tuple[str, float, bool, bool, dict[str, Any]]:
         if self.sb is None:
             raise RuntimeError("call reset() first")
         if self.result is not None:

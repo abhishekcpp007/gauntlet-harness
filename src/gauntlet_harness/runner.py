@@ -109,6 +109,11 @@ def run(
                     "policy": policy.name,
                     "messages": policy.messages,
                     "actions": env.actions,
+                    "prompt": getattr(env, "prompt", ""),
+                    "steps": [
+                        {"action": a, "obs": o}
+                        for a, o in zip(env.actions, getattr(env, "observations", []), strict=False)
+                    ],
                     "reward": result.reward,
                     "reward_breakdown": result.reward_breakdown,
                     "resolved": bool(result.grade and result.grade.resolved),
