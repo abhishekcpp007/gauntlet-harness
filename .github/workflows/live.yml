@@ -1,0 +1,63 @@
+name: Live tasks
+
+# Every Monday, turn the last two weeks of merged PRs into fresh tasks, validate them with the
+# calibration policies, and publish the task set as a build artifact. Fresh tasks are the point:
+# a model can't have trained on a fix merged after its cutoff (SWE-rebench, Badertdinov et al.).
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "look back this many days"
+        default: "14"
+      limit:
+        description: "PRs per repo"
+        default: "20"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          for piece in sandbox repo2env timemachine cheatcatcher; do
+            git clone --depth 1 "https://github.com/abhishekcpp007/gauntlet-$piece" "../$piece"
+          done
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync
+      - name: Collect merged PRs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          since=$(date -u -d "${{ inputs.days || '14' }} days ago" +%F)
+          echo "SINCE=$since" >> "$GITHUB_ENV"
+          args=$(grep -v '^#' datasets/live-repos.txt | sed 's/^/--repo /' | tr '\n' ' ')
+          uv run gauntlet collect $args --merged-after "$since" --limit ${{ inputs.limit || '20' }} \
+            --git-fallback -o out/prs.jsonl
+      - name: Build and leak-check tasks
+        run: uv run gauntlet build --prs out/prs.jsonl -o out/tasks.jsonl --rejected out/rejected.jsonl || true
+      - name: Validate with calibration policies
+        run: |
+          if [ -s out/tasks.jsonl ]; then
+            uv run gauntlet run --tasks out/tasks.jsonl --policies oracle,noop,cheater -o out/runs
+            uv run gauntlet report --results out/runs/results.jsonl --cutoff "$SINCE" --html out/report.html \
+              >> "$GITHUB_STEP_SUMMARY"
+            uv run gauntlet export --format swebench --tasks out/tasks.jsonl -o out/swebench.jsonl
+          else
+            echo "No new tasks since $SINCE." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: live-tasks-${{ env.SINCE }}
+          path: |
+            out/*.jsonl
+            out/report.html
+            out/runs/results.jsonl
