@@ -130,6 +130,7 @@ class GradeResult(BaseModel):
     statuses: dict[str, str] = Field(default_factory=dict)  # test id -> Status value after the patch
     passed: dict[str, dict[str, bool]] = Field(default_factory=dict)  # kind -> test id -> passed
     resolved: bool = False
+    tampered: list[str] = Field(default_factory=list)  # canary or integrity failures; never resolved
     error: str | None = None
 
     def rate(self, kind: str) -> float | None:

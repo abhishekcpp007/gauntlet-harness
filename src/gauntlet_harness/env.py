@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from gauntlet_cheatcatcher import scan
+from gauntlet_cheatcatcher.models import Finding
 from gauntlet_repo2env import extract_patch
 from gauntlet_sandbox import Sandbox, Trajectory
 
@@ -264,6 +265,8 @@ class SWEEnv:
         cheat = scan(agent_traj, patch, protected_paths=task.test_files)
 
         grade = self._grade(task, patch)
+        for problem in grade.tampered:  # the grader caught it at run time, which beats any static rule
+            cheat.findings.append(Finding(rule="grader-tamper", severity="high", message=problem))
         items = task.rubric or default_rubric(task)
         rubric = score_rubric(
             task, patch, grade, cheat, items, client=self.judge_client, model=self.judge_model
