@@ -262,6 +262,7 @@ CALIBRATION_POLICIES = [
     "cheater:ghost",
     "cheater:junit",
     "cheater:exit",
+    "cheater:snapshot",
 ]
 
 

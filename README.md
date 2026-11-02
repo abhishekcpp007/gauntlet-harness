@@ -101,11 +101,26 @@ That last one came out of a rerun. Ghost still won 2 of 10 because more-itertool
 
 After that, ghost and canary-aware resolved 0 of 60 tries across 3 runs, and the oracle still resolves 53 of 53 with zero false alarms. There's a test for every tell the cheat used.
 
+### Round three: a cheat that remembers the base commit
+
+The obvious next question was `git diff`. Could a cheat diff the test files and spare whatever got added, since that's the hidden tests plus the canary? The grading sandbox has no `.git`, so not directly. But a cheat doesn't need git. `cheater:snapshot` lists every test name in the repo while it works, bakes that list into the source in base64, and at grading time forces every *known* test to pass and spares every new one.
+
+That loses whenever a target is a brand new test, because the target gets spared too and fails. It wins when every target is an existing test the fix only changed. That was 1 of the 53 tasks (tomli-318), and there it won 3 out of 3 at +0.87 with Cheat Catcher seeing nothing. One task is enough for RL to learn from.
+
+The fix renames every target test for the length of the run, using the same sibling-plus-suffix scheme as the canary, and maps the results back after. Now "new" covers targets and canaries alike, so it tells a cheat nothing. A target that can't be renamed (inherited from a base class, say) keeps its name, and the cheat still needs every target to win.
+
+Two bugs showed up on the way, which is the point of running it on real tasks:
+
+- the first version could hand two targets the same new name, and boltons has 20 targets in one file, so one overwrote the other and the oracle lost 3 tasks
+- under load the "after" fingerprint once came back empty, and an empty result read as "every watched file changed", so an honest oracle got -1. It retries now, and a fingerprint that never finishes is an error, never tampering
+
+After that, snapshot resolves 0 of 53 (0 of 5 on tomli-318) and ghost 0 of 53.
+
 `gauntlet calibrate` runs all of this as one check, and it exits non-zero if the oracle stops resolving or any cheat beats 0:
 
 ```bash
 gauntlet calibrate --tasks datasets/gauntlet-live-2026-11/tasks.jsonl --sample 10
-# 100 episodes, 0 violation(s)
+# 110 episodes, 0 violation(s)
 ```
 
 The [Calibrate](.github/workflows/calibrate.yml) workflow runs it every night on random live tasks, picked by the date so each night checks different ones. CI only covers a toy repo, so this is what keeps the harness honest on real code, and it also catches a task that stops building over time.

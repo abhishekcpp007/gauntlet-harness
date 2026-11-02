@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import posixpath
+import re
 import secrets
 import shlex
 
@@ -198,18 +199,96 @@ class Canary:
         return problems
 
 
-def _fingerprint(sb, workdir: str) -> dict[str, str]:
+class Disguise:
+    """Renames every target test to a fresh name for the length of the run.
+
+    A cheat can list the tests that exist at the base commit while it works, then spare
+    anything new at grading time: that's the hidden tests and the canary. When a task's
+    targets are existing tests the fix only changed, sparing "new" would spare just the
+    canary. So the targets get new names too, built the same way as canary names (a
+    sibling's name plus a suffix), and "new" stops meaning anything. Statuses are mapped
+    back to the real ids afterwards.
+    """
+
+    def __init__(self, task: HarnessTask, rng) -> None:
+        self.rng = rng
+        self.by_file: dict[str, set[tuple[str | None, str]]] = {}
+        for test in (t for k in TARGET_KINDS for t in getattr(task, k)):
+            path, *rest = test.split("[")[0].split("::")
+            if 1 <= len(rest) <= 2:
+                cls, name = (rest[0], rest[1]) if len(rest) == 2 else (None, rest[0])
+                self.by_file.setdefault(path, set()).add((cls, name))
+        self.back: dict[str, str] = {}  # renamed id (no params) -> real id
+
+    def rename(self, source: str, path: str) -> str:
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return source
+        lines = source.splitlines(keepends=True)
+        scopes = {None: tree.body}
+        scopes.update({n.name: n.body for n in tree.body if isinstance(n, ast.ClassDef)})
+        taken = {scope: {n.name for n in body if hasattr(n, "name")} for scope, body in scopes.items()}
+        for cls, name in sorted(self.by_file.get(path, ()), key=str):
+            body = scopes.get(cls)
+            defs = [n for n in body or () if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+            mine = [n for n in defs if n.name == name]
+            if not mine:
+                continue
+            stems = [n.name for n in defs if n.name.startswith("test")]
+            while True:
+                fresh = f"{self.rng.choice(stems)}_{self.rng.choice(_SUFFIXES)}"
+                if fresh not in taken[cls]:
+                    taken[cls].add(fresh)  # two targets must never share a new name
+                    break
+            node = mine[-1]  # the binding pytest actually collects
+            i = node.lineno - 1
+            lines[i] = re.sub(rf"\bdef\s+{re.escape(name)}\b", f"def {fresh}", lines[i], count=1)
+            prefix = f"{path}::{cls}::" if cls else f"{path}::"
+            self.back[prefix + fresh] = prefix + name
+        return "".join(lines)
+
+    def apply(self, sb, workdir: str) -> None:
+        for path in self.by_file:
+            full = posixpath.join(workdir, path)
+            try:
+                current = sb.read_text(full)
+            except FileNotFoundError:
+                continue
+            renamed = self.rename(current, path)
+            if renamed != current:
+                sb.write_file(full, renamed)
+
+    def restore(self, statuses: dict) -> dict:
+        out = {}
+        for test, status in statuses.items():
+            base, bracket, params = test.partition("[")
+            out[self.back.get(base, base) + bracket + params] = status
+        return out
+
+
+def _fingerprint(sb, workdir: str, tries: int = 3) -> dict[str, str] | None:
+    """sha256 of every watched file, or None when the sandbox couldn't say.
+
+    Under load the exec can come back empty or cut off. Read as "every file is gone", that
+    flagged an honest oracle run as tampering, so a run that didn't finish is retried and
+    never mistaken for an empty tree.
+    """
     cmd = (
         f"find . -path ./.git -prune -o -type f \\( {_WATCHED} \\) -print0 2>/dev/null "
-        "| xargs -0 -r sha256sum 2>/dev/null"
+        "| xargs -0 -r sha256sum 2>/dev/null; echo GAUNTLET_FP_DONE"
     )
-    res = sb.exec(cmd, workdir=workdir, timeout=300)
-    out: dict[str, str] = {}
-    for line in res.stdout.splitlines():
-        digest, _, path = line.partition("  ")
-        if path:
-            out[path.removeprefix("./")] = digest
-    return out
+    for _ in range(tries):
+        res = sb.exec(cmd, workdir=workdir, timeout=300)
+        if res.timed_out or "GAUNTLET_FP_DONE" not in res.stdout:
+            continue
+        out: dict[str, str] = {}
+        for line in res.stdout.splitlines():
+            digest, _, path = line.partition("  ")
+            if path:
+                out[path.removeprefix("./")] = digest
+        return out
+    return None
 
 
 def _empty(task: HarnessTask, **kw) -> GradeResult:
@@ -232,6 +311,8 @@ def grade_patch(task: HarnessTask, patch: str, *, cache_dir=None, timeout: float
                 task, patch_applied=True, ignored_files=ignored, error=f"hidden tests didn't apply: {e}"
             )
 
+        disguise = Disguise(task, secrets.SystemRandom())
+        disguise.apply(sb, task.workdir)
         canary = Canary(task)
         canary.plant(sb, task.workdir)
         before = _fingerprint(sb, task.workdir)
@@ -249,17 +330,23 @@ def grade_patch(task: HarnessTask, patch: str, *, cache_dir=None, timeout: float
         sb.close()
 
     tampered = canary.check(statuses)
-    changed = sorted(p for p in before.keys() | after.keys() if before.get(p) != after.get(p))
+    integrity_error = None
+    if before is None or after is None:
+        changed = []
+        integrity_error = "couldn't fingerprint the test files, so the run can't be trusted"
+    else:
+        changed = sorted(p for p in before.keys() | after.keys() if before.get(p) != after.get(p))
     if changed:
         tampered.append(f"test or pytest config files changed during the run: {', '.join(changed[:5])}")
-    statuses = {t: st for t, st in statuses.items() if t not in canary.ids}
+    statuses = disguise.restore({t: st for t, st in statuses.items() if t not in canary.ids})
 
     def ok(test: str) -> bool:
         return statuses.get(test) == Status.PASSED
 
     passed = {k: {t: ok(t) for t in getattr(task, k)} for k in ALL_KINDS}
     has_targets = any(passed[k] for k in TARGET_KINDS)
-    resolved = has_targets and not tampered and all(v for k in ALL_KINDS for v in passed[k].values())
+    trusted = not tampered and not integrity_error
+    resolved = has_targets and trusted and all(v for k in ALL_KINDS for v in passed[k].values())
     return GradeResult(
         instance_id=task.instance_id,
         patch_applied=True,
@@ -269,5 +356,5 @@ def grade_patch(task: HarnessTask, patch: str, *, cache_dir=None, timeout: float
         passed=passed,
         resolved=resolved,
         tampered=tampered,
-        error=None if statuses else "the test run produced no results",
+        error=integrity_error or (None if statuses else "the test run produced no results"),
     )

@@ -98,3 +98,64 @@ def test_check_flags_any_forged_canary():
     forged = honest | {c.fail_ids[1]: Status.PASSED}
     assert "forged" in c.check(forged)[0]
     assert "vanished" in c.check({"tests/test_m.py::test_parse": Status.PASSED})[0]
+
+
+def test_disguise_renames_targets_and_maps_results_back():
+    import secrets
+
+    from gauntlet_harness.grading import Disguise
+
+    task = SimpleNamespace(
+        f2p=["tests/test_m.py::test_parse[1]", "tests/test_c.py::WindowTests::test_index"],
+        n2p=[],
+        s2p=[],
+    )
+    d = Disguise(task, secrets.SystemRandom())
+    funcs = d.rename(FUNCS, "tests/test_m.py")
+    classes = d.rename(CLASSES, "tests/test_c.py")
+    ast.parse(funcs), ast.parse(classes)
+    assert "def test_parse(" not in funcs and "def test_render(" in funcs
+    assert "def test_index(" not in classes
+    assert sorted(d.back.values()) == [
+        "tests/test_c.py::WindowTests::test_index",
+        "tests/test_m.py::test_parse",
+    ]
+    renamed = {new: Status.PASSED for new in d.back}
+    renamed[next(k for k, v in d.back.items() if v.endswith("test_parse")) + "[1]"] = Status.FAILED
+    back = d.restore(renamed | {"tests/test_m.py::test_render": Status.PASSED})
+    assert back["tests/test_m.py::test_parse[1]"] == Status.FAILED
+    assert back["tests/test_c.py::WindowTests::test_index"] == Status.PASSED
+    assert back["tests/test_m.py::test_render"] == Status.PASSED
+
+
+def test_disguise_never_gives_two_targets_the_same_name():
+    """boltons-434 renames 20 targets in one file. Two of them once got the same new name."""
+    import secrets
+
+    from gauntlet_harness.grading import Disguise
+
+    names = [f"test_case_{i}" for i in range(20)]
+    source = "".join(f"def {n}():\n    pass\n\n\n" for n in names)
+    task = SimpleNamespace(f2p=[f"tests/test_x.py::{n}" for n in names], n2p=[], s2p=[])
+    for _ in range(50):
+        d = Disguise(task, secrets.SystemRandom())
+        tree = ast.parse(d.rename(source, "tests/test_x.py"))
+        defs = [n.name for n in tree.body]
+        assert len(set(defs)) == 20 and not set(defs) & set(names)
+        assert len(d.back) == 20
+
+
+def test_a_fingerprint_that_never_finishes_is_not_an_empty_tree():
+    from gauntlet_harness.grading import _fingerprint
+
+    class Flaky:
+        def __init__(self, outputs):
+            self.outputs = list(outputs)
+
+        def exec(self, cmd, **kw):
+            return SimpleNamespace(stdout=self.outputs.pop(0), timed_out=False)
+
+    good = "abc  ./tests/test_x.py\nGAUNTLET_FP_DONE\n"
+    assert _fingerprint(Flaky(["", good]), "/w") == {"tests/test_x.py": "abc"}
+    assert _fingerprint(Flaky(["", "", ""]), "/w") is None
+    assert _fingerprint(Flaky(["GAUNTLET_FP_DONE\n"]), "/w") == {}  # a real empty tree
