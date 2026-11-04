@@ -25,10 +25,6 @@ jobs:
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
-      - run: |
-          for piece in sandbox repo2env timemachine cheatcatcher; do
-            git clone --depth 1 "https://github.com/abhishekcpp007/gauntlet-$piece" "../$piece"
-          done
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"

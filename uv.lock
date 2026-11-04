@@ -257,22 +257,10 @@ wheels = [
 [[package]]
 name = "gauntlet-cheatcatcher"
 version = "0.1.0"
-source = { editable = "../cheatcatcher" }
+source = { git = "https://github.com/abhishekcpp007/gauntlet-cheatcatcher#190a12d97885432c9eb479f425c6ba28cf6ce4f0" }
 dependencies = [
     { name = "gauntlet-sandbox" },
     { name = "pydantic" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "gauntlet-sandbox", editable = "../sandbox" },
-    { name = "pydantic", specifier = ">=2.6" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=8" },
-    { name = "ruff", specifier = ">=0.6" },
 ]
 
 [[package]]
@@ -307,10 +295,10 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "anthropic", marker = "extra == 'claude'", specifier = ">=2.3" },
-    { name = "gauntlet-cheatcatcher", editable = "../cheatcatcher" },
-    { name = "gauntlet-repo2env", editable = "../repo2env" },
-    { name = "gauntlet-sandbox", editable = "../sandbox" },
-    { name = "gauntlet-timemachine", editable = "../timemachine" },
+    { name = "gauntlet-cheatcatcher", git = "https://github.com/abhishekcpp007/gauntlet-cheatcatcher" },
+    { name = "gauntlet-repo2env", git = "https://github.com/abhishekcpp007/gauntlet-repo2env" },
+    { name = "gauntlet-sandbox", git = "https://github.com/abhishekcpp007/gauntlet-sandbox" },
+    { name = "gauntlet-timemachine", git = "https://github.com/abhishekcpp007/gauntlet-timemachine" },
     { name = "gymnasium", marker = "extra == 'gym'", specifier = ">=1.0" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "pydantic", specifier = ">=2.6" },
@@ -328,70 +316,28 @@ dev = [
 [[package]]
 name = "gauntlet-repo2env"
 version = "0.1.0"
-source = { editable = "../repo2env" }
+source = { git = "https://github.com/abhishekcpp007/gauntlet-repo2env#62be3f048b85d3f36c620a5ea5c0ac34e984b31a" }
 dependencies = [
     { name = "gauntlet-sandbox" },
     { name = "pydantic" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "gauntlet-sandbox", editable = "../sandbox" },
-    { name = "pydantic", specifier = ">=2.6" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=8" },
-    { name = "ruff", specifier = ">=0.6" },
 ]
 
 [[package]]
 name = "gauntlet-sandbox"
 version = "0.1.0"
-source = { editable = "../sandbox" }
+source = { git = "https://github.com/abhishekcpp007/gauntlet-sandbox#6208d2429448a3f92ec8437f538c3fa7595e406c" }
 dependencies = [
     { name = "docker" },
     { name = "pydantic" },
 ]
 
-[package.metadata]
-requires-dist = [
-    { name = "docker", specifier = ">=7.1" },
-    { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.110" },
-    { name = "pydantic", specifier = ">=2.6" },
-    { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.29" },
-]
-provides-extras = ["server"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "fastapi", specifier = ">=0.110" },
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "pytest", specifier = ">=8" },
-    { name = "ruff", specifier = ">=0.6" },
-    { name = "uvicorn", specifier = ">=0.29" },
-]
-
 [[package]]
 name = "gauntlet-timemachine"
 version = "0.1.0"
-source = { editable = "../timemachine" }
+source = { git = "https://github.com/abhishekcpp007/gauntlet-timemachine#65435e94b69dbd01f3d43c08fa81998527b9a8b6" }
 dependencies = [
     { name = "gauntlet-sandbox" },
     { name = "pydantic" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "gauntlet-sandbox", editable = "../sandbox" },
-    { name = "pydantic", specifier = ">=2.6" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=8" },
-    { name = "ruff", specifier = ">=0.6" },
 ]
 
 [[package]]
