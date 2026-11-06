@@ -4,7 +4,13 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from gauntlet_harness.policies import ClaudePolicy, NoopPolicy, OraclePolicy, make_policy
+from gauntlet_harness.policies import (
+    ClaudePolicy,
+    NoopPolicy,
+    OpenAIPolicy,
+    OraclePolicy,
+    make_policy,
+)
 
 
 class FakeEnv:
@@ -49,6 +55,9 @@ def test_make_policy():
     assert make_policy("oracle").name == "oracle"
     assert make_policy("claude:claude-sonnet-5-5").name == "claude:claude-sonnet-5-5"
     assert make_policy("claude").name == "claude:claude-opus-5-5"
+    assert make_policy("openai:gpt-5.1").name == "openai:gpt-5.1"
+    assert make_policy("openai").name == "openai:gpt-5.1"
+    assert make_policy("openai:Qwen/Qwen3-32B").name == "openai:Qwen/Qwen3-32B"
     with pytest.raises(ValueError):
         make_policy("gpt-9")
 
@@ -144,3 +153,97 @@ def test_zoo_policies_and_their_payloads():
     assert "from_item_and_call" not in make_policy("cheater:stealth").payload()  # hidden from regexes
     with pytest.raises(ValueError):
         make_policy("cheater:nope")
+
+
+# ------------------------------------------------------------------ openai compatible
+
+
+def oai_call(id, name, arguments):
+    return NS(id=id, type="function", function=NS(name=name, arguments=arguments))
+
+
+def oai_reply(*calls, content=None, prompt=11, completion=5):
+    message = NS(content=content, tool_calls=list(calls) or None)
+    return NS(choices=[NS(message=message)], usage=NS(prompt_tokens=prompt, completion_tokens=completion))
+
+
+class FakeOpenAI:
+    def __init__(self, replies):
+        self.replies, self.calls = list(replies), []
+        self.chat = NS(completions=NS(create=self._create))
+
+    def _create(self, **kw):
+        self.calls.append({**kw, "messages": [dict(m) for m in kw["messages"]]})
+        return self.replies.pop(0)
+
+
+def test_openai_maps_tool_calls_to_env_actions():
+    client = FakeOpenAI(
+        [
+            oai_reply(oai_call("c1", "bash", '{"command": "pytest -q"}')),
+            oai_reply(
+                oai_call(
+                    "c2",
+                    "edit",
+                    '{"command": "str_replace", "path": "/repo/x.py", "old_str": "a", "new_str": "b"}',
+                )
+            ),
+            oai_reply(content="done, the fix is in x.py"),
+        ]
+    )
+    env = FakeEnv()
+    policy = OpenAIPolicy("gpt-5.1", client=client)
+    policy.run(env)
+
+    assert env.actions[0] == {"type": "bash", "command": "pytest -q"}
+    assert env.actions[1] == {
+        "type": "edit",
+        "command": "str_replace",
+        "path": "/repo/x.py",
+        "old_str": "a",
+        "new_str": "b",
+    }
+    assert env.actions[-1] == {"type": "submit"}
+    assert policy.usage == {"input_tokens": 33, "output_tokens": 15}
+    # the system prompt goes first and tool results come back by id
+    assert client.calls[0]["messages"][0]["role"] == "system"
+    assert client.calls[1]["messages"][-1] == {
+        "role": "tool",
+        "tool_call_id": "c1",
+        "content": "ok: {'type': 'bash', 'command': 'pytest -q'}",
+    }
+
+
+def test_openai_submits_when_it_stops_calling_tools():
+    env = FakeEnv()
+    OpenAIPolicy("gpt-5.1", client=FakeOpenAI([oai_reply(content="nothing to do")])).run(env)
+    assert env.submitted and env.actions == [{"type": "submit"}]
+
+
+def test_openai_stops_when_env_truncates():
+    env = FakeEnv(max_steps=1)
+    replies = [oai_reply(oai_call("c1", "bash", '{"command": "ls"}'))]
+    OpenAIPolicy("gpt-5.1", client=FakeOpenAI(replies)).run(env)
+    assert env.submitted and len(env.actions) == 1
+
+
+def test_openai_survives_unparseable_arguments():
+    client = FakeOpenAI([oai_reply(oai_call("c1", "bash", "{not json")), oai_reply(content="giving up")])
+    env = FakeEnv()
+    OpenAIPolicy("gpt-5.1", client=client).run(env)
+    assert env.actions[0]["type"] == "bash" and "could not parse" in env.actions[0]["command"]
+    assert env.actions[-1] == {"type": "submit"}
+
+
+def test_openai_submits_when_it_runs_out_of_steps():
+    env = FakeEnv(max_steps=99)
+    replies = [oai_reply(oai_call(f"c{i}", "bash", '{"command": "ls"}')) for i in range(3)]
+    OpenAIPolicy("gpt-5.1", client=FakeOpenAI(replies), max_steps=3).run(env)
+    assert env.actions[-1] == {"type": "submit"}
+
+
+def test_openai_base_url_from_env(monkeypatch):
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:8000/v1")
+    assert OpenAIPolicy("Qwen/Qwen3-32B").base_url == "http://localhost:8000/v1"
+    monkeypatch.delenv("OPENAI_BASE_URL")
+    assert OpenAIPolicy("gpt-5.1").base_url is None

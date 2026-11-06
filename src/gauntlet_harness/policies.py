@@ -1,12 +1,16 @@
 """Policies drive an SWEEnv from reset to the terminal step.
 
-`claude:<model>` is the real one, any Claude model id works, so several models can be judged
-side by side. The scripted ones calibrate the harness: `oracle` must always score near the top,
-`noop` near the bottom, and `cheater` must always be caught and penalized.
+`claude:<model>` and `openai:<model>` are the real ones. Point `OPENAI_BASE_URL` at vLLM,
+Ollama, Together, OpenRouter or anything else that speaks the same API and the second one
+drives those too, so hosted and local models get judged side by side.
+
+The scripted ones calibrate the harness: `oracle` must always score near the top, `noop` near
+the bottom, and `cheater` must always be caught and penalized.
 """
 
 from __future__ import annotations
 
+import json
 import os
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
@@ -197,6 +201,158 @@ def _to_action(block: Any) -> dict[str, Any]:
     if block.name == "str_replace_based_edit_tool":
         return {"type": "edit", **args}
     return {"type": f"unknown:{block.name}"}
+
+
+class OpenAIPolicy(Policy):
+    """Any OpenAI-compatible chat completions endpoint, with the same two tools Claude gets.
+
+    The spec is ``openai:<model>``. Point ``OPENAI_BASE_URL`` somewhere else and the same
+    policy drives vLLM, Ollama, Together, OpenRouter, DeepSeek or anything that speaks the
+    same API, so one policy covers hosted and local models alike.
+    """
+
+    TOOLS: list[dict[str, Any]] = [
+        {
+            "type": "function",
+            "function": {
+                "name": "bash",
+                "description": "Run a shell command in the repository and return its output.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"command": {"type": "string", "description": "The command to run."}},
+                    "required": ["command"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "edit",
+                "description": (
+                    "View or change a file. `view` shows it, `create` writes file_text, "
+                    "`str_replace` swaps old_str for new_str and old_str has to match exactly "
+                    "once, `insert` puts insert_text after insert_line."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "enum": ["view", "create", "str_replace", "insert"]},
+                        "path": {"type": "string", "description": "Absolute path inside the repository."},
+                        "file_text": {"type": "string"},
+                        "old_str": {"type": "string"},
+                        "new_str": {"type": "string"},
+                        "insert_line": {"type": "integer"},
+                        "insert_text": {"type": "string"},
+                    },
+                    "required": ["command", "path"],
+                },
+            },
+        },
+    ]
+    SYSTEM = ClaudePolicy.SYSTEM
+
+    def __init__(
+        self,
+        model: str,
+        *,
+        base_url: str | None = None,
+        max_steps: int = 60,
+        client: Any = None,
+    ) -> None:
+        super().__init__()
+        self.model = model
+        self.base_url = base_url or os.environ.get("OPENAI_BASE_URL") or None
+        self.max_steps = max_steps
+        self._client = client
+        self.name = f"openai:{model}"
+        self.usage = {"input_tokens": 0, "output_tokens": 0}
+
+    @property
+    def client(self) -> Any:
+        if self._client is None:
+            import openai
+
+            kwargs: dict[str, Any] = {}
+            if self.base_url:
+                kwargs["base_url"] = self.base_url
+            # local servers usually want any non-empty key
+            if not os.environ.get("OPENAI_API_KEY") and self.base_url:
+                kwargs["api_key"] = "gauntlet"
+            self._client = openai.OpenAI(**kwargs)
+        return self._client
+
+    def run(self, env: SWEEnv) -> None:
+        obs, _ = env.reset()
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": self.SYSTEM},
+            {"role": "user", "content": obs},
+        ]
+        self._log("user", obs)
+        for _ in range(self.max_steps):
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                tools=self.TOOLS,
+                max_completion_tokens=16000,
+            )
+            usage = getattr(response, "usage", None)
+            if usage is not None:
+                self.usage["input_tokens"] += getattr(usage, "prompt_tokens", 0) or 0
+                self.usage["output_tokens"] += getattr(usage, "completion_tokens", 0) or 0
+
+            message = response.choices[0].message
+            calls = list(getattr(message, "tool_calls", None) or [])
+            messages.append(_assistant_turn(message, calls))
+            self._log(
+                "assistant", {"content": message.content, "tool_calls": [_call_plain(c) for c in calls]}
+            )
+
+            if not calls:
+                env.step({"type": "submit"})
+                return
+
+            for call in calls:
+                action = _openai_action(call)
+                obs, _, terminated, truncated, info = env.step(action)
+                messages.append({"role": "tool", "tool_call_id": call.id, "content": obs})
+                self._log("tool", obs)
+                if terminated or truncated:
+                    return
+        # out of steps, submit what is there rather than losing the episode
+        env.step({"type": "submit"})
+
+
+def _assistant_turn(message: Any, calls: list[Any]) -> dict[str, Any]:
+    turn: dict[str, Any] = {"role": "assistant", "content": message.content or ""}
+    if calls:
+        turn["tool_calls"] = [
+            {
+                "id": c.id,
+                "type": "function",
+                "function": {"name": c.function.name, "arguments": c.function.arguments},
+            }
+            for c in calls
+        ]
+    return turn
+
+
+def _call_plain(call: Any) -> dict[str, Any]:
+    return {"id": call.id, "name": call.function.name, "arguments": call.function.arguments}
+
+
+def _openai_action(call: Any) -> dict[str, Any]:
+    name = call.function.name
+    try:
+        args = json.loads(call.function.arguments or "{}")
+    except json.JSONDecodeError:
+        return {"type": "bash", "command": f"echo 'could not parse the arguments for {name}'"}
+    if not isinstance(args, dict):
+        return {"type": "bash", "command": f"echo 'arguments for {name} were not an object'"}
+    if name == "bash":
+        return {"type": "bash", "command": args.get("command", "")}
+    if name == "edit":
+        return {"type": "edit", **args}
+    return {"type": f"unknown:{name}"}
 
 
 # ---------------------------------------------------------------- the cheater zoo
@@ -467,7 +623,13 @@ SCRIPTED = {"oracle": OraclePolicy, "noop": NoopPolicy, "cheater": CheaterPolicy
 
 
 def make_policy(spec: str, *, client: Any = None) -> Policy:
-    """`oracle`, `noop`, `cheater`, or `claude:<model id>` (bare `claude` means the default model)."""
+    """`oracle`, `noop`, `cheater[:trick]`, `claude:<model>` or `openai:<model>`.
+
+    A bare `claude` or `openai` takes the model from `GAUNTLET_CLAUDE_MODEL` or
+    `GAUNTLET_OPENAI_MODEL`. `openai:` talks to any OpenAI-compatible endpoint, so
+    `OPENAI_BASE_URL=http://localhost:8000/v1 openai:Qwen/Qwen3-32B` judges a local
+    vLLM server with the same code path as a hosted model.
+    """
     if spec in SCRIPTED:
         return SCRIPTED[spec]()
     if spec.startswith("cheater:"):
@@ -475,4 +637,9 @@ def make_policy(spec: str, *, client: Any = None) -> Policy:
     if spec == "claude" or spec.startswith("claude:"):
         model = spec.partition(":")[2] or os.environ.get("GAUNTLET_CLAUDE_MODEL", "claude-opus-5-5")
         return ClaudePolicy(model, client=client)
-    raise ValueError(f"unknown policy {spec!r}. Use oracle, noop, cheater[:trick] or claude:<model>")
+    if spec == "openai" or spec.startswith("openai:"):
+        model = spec.partition(":")[2] or os.environ.get("GAUNTLET_OPENAI_MODEL", "gpt-5.1")
+        return OpenAIPolicy(model, client=client)
+    raise ValueError(
+        f"unknown policy {spec!r}. Use oracle, noop, cheater[:trick], claude:<model> or openai:<model>"
+    )

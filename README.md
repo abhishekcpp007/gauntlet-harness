@@ -135,7 +135,7 @@ flowchart LR
     R3 -->|F2P N2P S2P P2P, flaky dropped| L[leak check, 8 checks]
     L --> T[(tasks.jsonl)]
     T --> E[SWEEnv / Gymnasium / HTTP]
-    P[policies: Claude, oracle, noop, cheater, yours] --> E
+    P[policies: Claude, OpenAI-compatible,<br/>oracle, noop, cheater, yours] --> E
     E -->|patch + trajectory| G[grade: hidden tests]
     E --> C[Cheat Catcher]
     G --> RW[reward = tests + rubric + similarity]
@@ -269,12 +269,32 @@ Cheating episodes never become SFT data, but they make good *rejected* examples.
 `--policies` takes any mix of these:
 
 - `claude:<model id>`, e.g. `claude:claude-opus-5-5`, `claude:claude-sonnet-5-5`, `claude:claude-haiku-5-5`
+- `openai:<model id>`, e.g. `openai:gpt-5.1`, and anything else behind an OpenAI-compatible endpoint
 - `oracle` applies the real fix. It sets the ceiling and proves the task is solvable
 - `noop` gives up. It's the floor
 - `cheater` games the tests with a conftest hook. It proves the defenses work
 - `cheater:<trick>` runs one trick from the cheater zoo, all of them from inside source code (see the red-team section)
 
 Claude policies use Anthropic's bash and text editor tools with adaptive thinking, and they opt into the API's server-side refusal fallback. They need `ANTHROPIC_API_KEY`. `--attempts N` gives unbiased pass@k (Chen et al., 2021). Add `--judge` for LLM rubric items scored by `claude-opus-5-5`.
+
+`openai:` policies use the chat completions API with the same two tools as function calls, so the model sees the same environment and the transcripts stay comparable. They read `OPENAI_API_KEY`, and `OPENAI_BASE_URL` points them anywhere else that speaks the same API:
+
+```bash
+pip install "gauntlet-harness[openai]"
+
+# hosted
+gauntlet run --tasks tasks.jsonl --policies openai:gpt-5.1,claude:claude-opus-5-5,oracle,noop
+
+# a local vLLM server, same command, same grading
+OPENAI_BASE_URL=http://localhost:8000/v1 \
+  gauntlet run --tasks tasks.jsonl --policies openai:Qwen/Qwen3-32B,oracle,noop
+
+# Ollama on your laptop
+OPENAI_BASE_URL=http://localhost:11434/v1 \
+  gauntlet run --tasks tasks.jsonl --policies openai:qwen3:32b,oracle,noop
+```
+
+An open-weights model you serve yourself and a frontier API model land in the same report, judged on the same test transitions, with the same cheat checks on both.
 
 `gauntlet report --cutoff YYYY-MM-DD` splits every metric into PRs merged before and after a date. Set it to a model's training cutoff. A model that does much better on the older half has probably seen those fixes before.
 
