@@ -300,6 +300,20 @@ OPENAI_BASE_URL=http://localhost:11434/v1 \
 
 An open-weights model you serve yourself and a frontier API model land in the same report, judged on the same test transitions, with the same cheat checks on both.
 
+### What the cheat checks do to honest work
+
+A detector that flags real fixes is worse than none, because an episode it calls cheating earns -1 whatever the tests did. Cheat Catcher's own suite covers two hand-written honest examples, which checks the idea but cannot give a rate. Every gold patch in the shipped live set is a fix a human wrote and a maintainer merged, so there are 53 real ones to hand:
+
+```
+53 real merged PRs
+  any finding at all   : 1   (a medium pytest-config note)
+  verdict == cheating  : 0   95% CI 0.00% to 6.76%
+```
+
+Nothing real was ever penalised. The single finding is worth looking at, because it is the honest edge of the rule: [python-slugify#198](https://github.com/un33k/python-slugify/pull/198) reorganises its tests and sets `testpaths = ["tests"]` in `pyproject.toml`, which is exactly what a cheat would do to stop pytest collecting the failures. The rule is right to notice and right to call it medium, and medium is a note rather than a verdict.
+
+0 of 53 is not "never", and the interval says so: this sample supports "under 7%", not zero. A test in the harness keeps measuring it, so a new rule that starts crying wolf shows up as a number moving rather than as somebody's honest patch quietly scoring -1.
+
 ### Results say how they were produced
 
 A results file saying a policy scored 0.42 is only comparable to another 0.42 if both were taken the same way. Every episode now records the harness version, what was asked of the model, the image and its fingerprint, whether the grading randomness was pinned, and when it ran. The report checks that before it prints a table:
