@@ -41,6 +41,14 @@ class Policy(ABC):
         self.messages: list[dict[str, Any]] = []  # RL-ready transcript
         self.usage: dict[str, int] = {}
 
+    def params(self) -> dict[str, Any]:
+        """What was asked of the model, recorded with the result.
+
+        A score is only comparable to another score taken the same way, and the policy name
+        alone does not say how. Scripted policies have nothing to declare.
+        """
+        return {}
+
     @abstractmethod
     def run(self, env: SWEEnv) -> None:
         """reset() the env and step until terminated or truncated."""
@@ -129,6 +137,9 @@ class ClaudePolicy(Policy):
         self._client = client
         self.name = f"claude:{model}"
         self.usage = {"input_tokens": 0, "output_tokens": 0}
+
+    def params(self) -> dict[str, Any]:
+        return {"model": self.model, "effort": self.effort, "max_tokens": 16000}
 
     @property
     def client(self) -> Any:
@@ -266,6 +277,14 @@ class OpenAIPolicy(Policy):
         self._client = client
         self.name = f"openai:{model}"
         self.usage = {"input_tokens": 0, "output_tokens": 0}
+
+    def params(self) -> dict[str, Any]:
+        return {
+            "model": self.model,
+            "base_url": self.base_url,
+            "max_steps": self.max_steps,
+            "max_completion_tokens": 16000,
+        }
 
     @property
     def client(self) -> Any:

@@ -129,7 +129,49 @@ def summarize(results: list[EpisodeResult], *, cutoff: date | None = None) -> di
         "cutoff": cutoff.isoformat() if cutoff else None,
         "policies": table,
         "comparisons": comparisons,
+        "provenance_warnings": provenance_warnings(results),
     }
+
+
+def provenance_warnings(results: list[EpisodeResult]) -> list[str]:
+    """Say so when the episodes in one report were not all produced the same way.
+
+    Comparing a policy graded by one harness version against a policy graded by another, or in
+    a different image, is not a comparison. It is quiet enough to miss, so the report says it
+    out loud rather than letting a table imply the runs are equivalent.
+    """
+    warnings: list[str] = []
+    seen = [r.provenance for r in results if r.provenance is not None]
+    if not seen:
+        return ["no provenance recorded, so these results cannot be checked for comparability"]
+    if len(seen) < len(results):
+        warnings.append(
+            f"{len(results) - len(seen)} of {len(results)} episodes carry no provenance, "
+            "probably from an older run"
+        )
+
+    def spread(name: str, values: list[str]) -> None:
+        distinct = sorted(set(values))
+        if len(distinct) > 1:
+            warnings.append(f"mixed {name}: {', '.join(distinct)}")
+
+    spread("harness versions", [p.harness_version or "unknown" for p in seen])
+    # "unset" has to count as a value of its own: some episodes graded with a pinned seed and
+    # some without is exactly the mix worth knowing about
+    spread("grading seeds", [p.grading_seed or "unset" for p in seen])
+
+    # images and sampling parameters only have to agree within a policy, since different
+    # policies are meant to differ
+    by_policy: dict[str, set[tuple]] = defaultdict(set)
+    for r in results:
+        if r.provenance is not None:
+            by_policy[r.policy].add(r.provenance.key())
+    for policy, keys in sorted(by_policy.items()):
+        if len(keys) > 1:
+            warnings.append(
+                f"{policy} ran under {len(keys)} different setups, so its rows are not one measurement"
+            )
+    return warnings
 
 
 def _fmt(v: Any) -> str:
@@ -172,6 +214,9 @@ def render_markdown(summary: dict[str, Any]) -> str:
             before = _fmt(b and b["resolved_rate"])
             after = _fmt(a and a["resolved_rate"])
             lines.append(f"- {row['policy']}: {before} before, {after} after")
+    if summary.get("provenance_warnings"):
+        lines += ["", "**Comparability**", ""]
+        lines += [f"- {w}" for w in summary["provenance_warnings"]]
     if summary.get("comparisons"):
         lines += [
             "",

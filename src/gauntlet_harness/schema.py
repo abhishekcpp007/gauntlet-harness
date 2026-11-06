@@ -162,6 +162,32 @@ class RubricScore(BaseModel):
     skipped: list[str] = Field(default_factory=list)  # judge items we couldn't score (no client)
 
 
+class Provenance(BaseModel):
+    """What produced a number, so two numbers can be compared honestly.
+
+    A results file says a policy scored 0.42. Whether that is comparable to another 0.42
+    depends on the harness that graded it, the image the task ran in, and what was asked of
+    the model. None of that used to be written down, so a run from last month and a run from
+    today read as the same measurement even when they were not.
+    """
+
+    harness_version: str = ""
+    policy_params: dict[str, Any] = Field(default_factory=dict)
+    image: str = ""
+    env_fingerprint: str = ""
+    grading_seed: str | None = None  # set means the grading randomness was pinned
+    ran_at: str = ""
+
+    def key(self) -> tuple:
+        """The parts that have to match for two episodes to be measuring the same thing."""
+        return (
+            self.harness_version,
+            self.image,
+            self.env_fingerprint,
+            tuple(sorted(self.policy_params.items(), key=lambda kv: kv[0])),
+        )
+
+
 class EpisodeResult(BaseModel):
     format: str = "gauntlet.harness.episode/v1"
     episode_id: str
@@ -182,4 +208,5 @@ class EpisodeResult(BaseModel):
     trajectory_path: str | None = None
     rl_path: str | None = None
     merged_at: str | None = None
+    provenance: Provenance | None = None
     error: str | None = None

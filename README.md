@@ -300,6 +300,19 @@ OPENAI_BASE_URL=http://localhost:11434/v1 \
 
 An open-weights model you serve yourself and a frontier API model land in the same report, judged on the same test transitions, with the same cheat checks on both.
 
+### Results say how they were produced
+
+A results file saying a policy scored 0.42 is only comparable to another 0.42 if both were taken the same way. Every episode now records the harness version, what was asked of the model, the image and its fingerprint, whether the grading randomness was pinned, and when it ran. The report checks that before it prints a table:
+
+```
+**Comparability**
+
+- mixed harness versions: 0.1.0, 0.2.0
+- claude:x ran under 2 different setups, so its rows are not one measurement
+```
+
+Different policies are meant to differ, so that is never flagged. What gets flagged is the same policy measured two ways, or a file that mixes harness versions, or episodes from before any of this was recorded. A pinned `GAUNTLET_GRADING_SEED` on some episodes and not others counts as a mix too, since those episodes were not graded under the same conditions.
+
 ### A ceiling on what a run can spend
 
 A sweep is tasks by policies by attempts. The November set with four policies and four attempts is 848 episodes, and with a metered API behind one of them there was nothing between a typo and a large bill. Any of these stops the run:

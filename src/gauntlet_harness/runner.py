@@ -11,18 +11,21 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from . import __version__
 from .budget import Budget, BudgetExhausted
 from .env import SWEEnv
 from .policies import make_policy
 from .reward import RewardConfig
-from .schema import EpisodeResult, HarnessTask
+from .schema import EpisodeResult, HarnessTask, Provenance
 
 log = logging.getLogger(__name__)
 
@@ -117,6 +120,14 @@ def run(
         actions = getattr(env, "actions", [])  # env is None when it could not be built
         result.episode_id, result.policy, result.attempt = eid, policy.name, attempt
         result.usage = dict(policy.usage)
+        result.provenance = Provenance(
+            harness_version=__version__,
+            policy_params=policy.params(),
+            image=task.image,
+            env_fingerprint=task.env_fingerprint,
+            grading_seed=os.environ.get("GAUNTLET_GRADING_SEED"),
+            ran_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        )
         if budget is not None:
             budget.record(policy.name, result.usage)
         result.merged_at = task.pr.merged_at
