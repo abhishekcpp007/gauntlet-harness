@@ -19,6 +19,7 @@ from statistics import mean
 from typing import Any
 
 from .schema import ALL_KINDS, EpisodeResult
+from .stats import bootstrap_pass_at_k, mcnemar, wilson
 
 
 def solved(r: EpisodeResult) -> bool:
@@ -41,6 +42,18 @@ def pass_at_k(results: list[EpisodeResult], k: int) -> float | None:
 def _avg(values: list[float | None]) -> float | None:
     vals = [v for v in values if v is not None]
     return round(mean(vals), 4) if vals else None
+
+
+def _per_task(results: list[EpisodeResult]) -> dict[str, list[bool]]:
+    by_task: dict[str, list[bool]] = defaultdict(list)
+    for r in results:
+        by_task[r.instance_id].append(solved(r))
+    return by_task
+
+
+def _solved_any(results: list[EpisodeResult]) -> dict[str, bool]:
+    """One boolean per task, for the paired comparison between two policies."""
+    return {task: any(outcomes) for task, outcomes in _per_task(results).items()}
 
 
 def _block(results: list[EpisodeResult]) -> dict[str, Any]:
@@ -68,6 +81,14 @@ def _block(results: list[EpisodeResult]) -> dict[str, Any]:
     for k in (2, 5):
         if attempts >= k:
             out[f"pass@{k}"] = pass_at_k(results, k)
+
+    # a rate off a few dozen tasks is an estimate. The bootstrap resamples tasks rather than
+    # episodes, because several attempts on one task are not independent draws.
+    per_task = list(_per_task(results).values())
+    out["pass@1_ci95"] = bootstrap_pass_at_k(per_task, 1)
+    solved_tasks = sum(1 for outcomes in per_task if any(outcomes))
+    out["tasks_solved"] = solved_tasks
+    out["tasks_solved_ci95"] = wilson(solved_tasks, len(per_task))
     return out
 
 
@@ -94,12 +115,28 @@ def summarize(results: list[EpisodeResult], *, cutoff: date | None = None) -> di
             row["after_cutoff"] = _block(after) if after else None
         table.append(row)
     table.sort(key=lambda r: (-r["resolved_rate"], -(r["mean_reward"] or 0)))
-    return {"cutoff": cutoff.isoformat() if cutoff else None, "policies": table}
+
+    # Every policy ran the same tasks, so comparing two of them is a paired question and only
+    # the tasks they disagreed on carry any signal. McNemar's exact test is what answers it.
+    names = [row["policy"] for row in table]
+    comparisons = []
+    for i, first in enumerate(names):
+        for second in names[i + 1 :]:
+            test = mcnemar(_solved_any(by_policy[first]), _solved_any(by_policy[second]))
+            if test:
+                comparisons.append({"a": first, "b": second, **test})
+    return {
+        "cutoff": cutoff.isoformat() if cutoff else None,
+        "policies": table,
+        "comparisons": comparisons,
+    }
 
 
 def _fmt(v: Any) -> str:
     if v is None:
         return "-"
+    if isinstance(v, (list, tuple)) and len(v) == 2:  # a confidence interval
+        return f"{v[0]:.3f} to {v[1]:.3f}"
     if isinstance(v, float):
         return f"{v:.3f}"
     return str(v)
@@ -109,6 +146,7 @@ COLUMNS = [
     ("policy", "Policy"),
     ("resolved_rate", "Resolved"),
     ("pass@1", "pass@1"),
+    ("pass@1_ci95", "95% CI"),
     ("f2p_rate", "F2P"),
     ("n2p_rate", "N2P"),
     ("s2p_rate", "S2P"),
@@ -134,6 +172,21 @@ def render_markdown(summary: dict[str, Any]) -> str:
             before = _fmt(b and b["resolved_rate"])
             after = _fmt(a and a["resolved_rate"])
             lines.append(f"- {row['policy']}: {before} before, {after} after")
+    if summary.get("comparisons"):
+        lines += [
+            "",
+            "Paired comparisons, McNemar's exact test over the tasks both policies ran. Only the",
+            "tasks they disagreed on count, and a gap that isn't significant is a gap you can't",
+            "report as one.",
+            "",
+            "| A | B | Only A | Only B | p | Significant |",
+            "|---|---|---|---|---|---|",
+        ]
+        for c in summary["comparisons"]:
+            mark = "yes" if c["significant"] else "no"
+            lines.append(
+                f"| {c['a']} | {c['b']} | {c['a_only']} | {c['b_only']} | {c['p_value']:.4f} | {mark} |"
+            )
     return "\n".join(lines) + "\n"
 
 

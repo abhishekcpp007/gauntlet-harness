@@ -72,3 +72,60 @@ def test_cutoff_split_spots_contamination():
 def test_renderers_escape(fmt):
     out = fmt(summarize([ep("a", "<script>", 0, True)]))
     assert "<script>" not in out or fmt is render_markdown
+
+
+# ------------------------------------------------------------------ uncertainty
+
+
+def _episode(task, policy, resolved, attempt=0):
+    from gauntlet_harness.schema import GradeResult
+
+    return EpisodeResult(
+        episode_id=f"{task}__{policy}__{attempt}",
+        instance_id=task,
+        policy=policy,
+        attempt=attempt,
+        steps=1,
+        seconds=1.0,
+        usage={},
+        patch="",
+        grade=GradeResult(instance_id=task, patch_applied=True, resolved=resolved),
+        reward=1.0 if resolved else 0.0,
+        cheat_verdict="clean",
+    )
+
+
+def test_every_policy_row_carries_an_interval():
+    rows = [_episode(f"t{i}", "claude:x", i % 2 == 0) for i in range(20)]
+    row = summarize(rows)["policies"][0]
+    lo, hi = row["pass@1_ci95"]
+    assert lo < row["pass@1"] < hi
+    assert row["tasks_solved"] == 10
+    tlo, thi = row["tasks_solved_ci95"]
+    assert tlo < 0.5 < thi
+
+
+def test_a_small_gap_between_two_policies_is_not_called_significant():
+    # 11 of 20 against 9 of 20 is the shape of most leaderboard gaps
+    rows = [_episode(f"t{i}", "a", i < 11) for i in range(20)]
+    rows += [_episode(f"t{i}", "b", i >= 11 or i < 9) for i in range(20)]
+    (comparison,) = summarize(rows)["comparisons"]
+    assert comparison["p_value"] > 0.05 and not comparison["significant"]
+
+
+def test_a_real_gap_is_called_significant():
+    rows = [_episode(f"t{i}", "oracle", True) for i in range(20)]
+    rows += [_episode(f"t{i}", "noop", False) for i in range(20)]
+    (comparison,) = summarize(rows)["comparisons"]
+    assert comparison["a_only"] == 20 and comparison["b_only"] == 0
+    assert comparison["significant"]
+
+
+def test_the_markdown_shows_the_interval_and_the_comparison():
+    rows = [_episode(f"t{i}", "a", i < 11) for i in range(20)]
+    rows += [_episode(f"t{i}", "b", i >= 11 or i < 9) for i in range(20)]
+    text = render_markdown(summarize(rows))
+    assert "95% CI" in text and " to " in text
+    assert "McNemar" in text
+    # the policy table is sorted by resolve rate, so don't assume which name leads the row
+    assert "| a | b |" in text or "| b | a |" in text
