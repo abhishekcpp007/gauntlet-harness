@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+from .budget import Budget, BudgetExhausted
 from .env import SWEEnv
 from .policies import make_policy
 from .reward import RewardConfig
@@ -50,6 +51,7 @@ def run(
     judge_client: Any = None,
     judge_model: str = "claude-opus-5-5",
     policy_client: Any = None,
+    budget: Budget | None = None,
     on_result: Callable[[EpisodeResult], None] | None = None,
     env_kwargs: dict[str, Any] | None = None,
 ) -> list[EpisodeResult]:
@@ -69,7 +71,12 @@ def run(
     ]
     log.info("%d episodes to run, %d already done", len(jobs), len(done))
 
-    def one(task: HarnessTask, spec: str, attempt: int) -> EpisodeResult:
+    def one(task: HarnessTask, spec: str, attempt: int) -> EpisodeResult | None:
+        if budget is not None:
+            try:
+                budget.check()
+            except BudgetExhausted:
+                return None  # the run stops here; what is already written stays written
         eid = episode_id(task, spec, attempt)
         policy = make_policy(spec, client=policy_client)
         env = SWEEnv(
@@ -99,6 +106,8 @@ def run(
 
         result.episode_id, result.policy, result.attempt = eid, policy.name, attempt
         result.usage = dict(policy.usage)
+        if budget is not None:
+            budget.record(policy.name, result.usage)
         result.merged_at = task.pr.merged_at
         rl_path = out_dir / "rl" / f"{eid}.json"
         rl_path.write_text(
@@ -134,5 +143,14 @@ def run(
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         futures = [pool.submit(one, *job) for job in jobs]
         for fut in as_completed(futures):
-            out.append(fut.result())
+            if (result := fut.result()) is not None:
+                out.append(result)
+    if budget is not None and budget.stopped_because:
+        log.warning(
+            "stopped early: %s. %d episodes ran, %s. Raise the ceiling and run the same "
+            "command again to carry on.",
+            budget.stopped_because,
+            budget.episodes,
+            f"${budget.usd:.2f} spent" if budget.usd else "no priced policies",
+        )
     return out

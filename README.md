@@ -300,6 +300,26 @@ OPENAI_BASE_URL=http://localhost:11434/v1 \
 
 An open-weights model you serve yourself and a frontier API model land in the same report, judged on the same test transitions, with the same cheat checks on both.
 
+### A ceiling on what a run can spend
+
+A sweep is tasks by policies by attempts. The November set with four policies and four attempts is 848 episodes, and with a metered API behind one of them there was nothing between a typo and a large bill. Any of these stops the run:
+
+```bash
+gauntlet run --tasks tasks.jsonl --policies openai:gpt-5.1,oracle,noop \
+  --prices 'openai:gpt-5.1=1.25/10' --max-usd 20 --max-seconds 3600
+```
+
+`--max-episodes`, `--max-tokens`, `--max-seconds` and `--max-usd` are all optional and all independent. `--prices` is dollars per million tokens, input then output, and the longest matching policy prefix wins, so `claude:=3/15` prices a whole family at once. A policy with no price costs nothing, which is what you want for `oracle` and `noop`.
+
+The check runs before an episode starts, so a ceiling already reached costs no container and no API call. When a run stops early it says so and keeps everything it finished:
+
+```
+stopped early: spend ceiling reached: $20.03/$20.00
+raise the ceiling and run the same command again to carry on where it stopped
+```
+
+Runs are resumable, so that second command picks up exactly where the first stopped rather than paying for the same episodes twice.
+
 ### Every number comes with how much it is worth
 
 A resolve rate off 53 tasks is an estimate, not a measurement, and most published coding-agent numbers are reported without saying so. The report puts a 95% interval next to pass@1 and runs a paired test between every pair of policies:

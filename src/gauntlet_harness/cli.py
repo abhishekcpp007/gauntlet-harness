@@ -154,6 +154,22 @@ def cmd_leakcheck(args: argparse.Namespace) -> int:
     return 1 if bad else 0
 
 
+def _budget(args: argparse.Namespace):
+    """A Budget when any ceiling was asked for, otherwise None."""
+    from .budget import Budget, parse_prices
+
+    names = ("max_episodes", "max_tokens", "max_seconds", "max_usd")
+    if not any(getattr(args, n, None) for n in names) and not getattr(args, "prices", None):
+        return None
+    return Budget(
+        max_episodes=getattr(args, "max_episodes", None),
+        max_tokens=getattr(args, "max_tokens", None),
+        max_seconds=getattr(args, "max_seconds", None),
+        max_usd=getattr(args, "max_usd", None),
+        prices=parse_prices(getattr(args, "prices", None) or ""),
+    )
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     from .report import render_markdown, summarize
     from .runner import run
@@ -171,6 +187,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         mark = "SOLVED" if g and g.resolved and r.cheat_verdict != "cheating" else "-"
         _say(f"{r.policy:28} {r.instance_id:36} {mark:6} reward={r.reward:+.3f} cheat={r.cheat_verdict}")
 
+    budget = _budget(args)
     results = run(
         tasks,
         policies,
@@ -178,6 +195,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         attempts=args.attempts,
         workers=args.workers,
         max_steps=args.max_steps,
+        budget=budget,
         judge_client=client if args.judge else None,
         judge_model=args.judge_model,
         policy_client=client,
@@ -186,6 +204,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     from .runner import load_results
 
     print(render_markdown(summarize(load_results(Path(args.output) / "results.jsonl"))))
+    if budget is not None and budget.stopped_because:
+        _say(f"\nstopped early: {budget.stopped_because}")
+        _say(f"spent: {budget.summary()}")
+        _say("raise the ceiling and run the same command again to carry on where it stopped")
     return 0 if all(r.error is None for r in results) else 1
 
 
@@ -356,6 +378,16 @@ def main(argv: list[str] | None = None) -> int:
             "--judge", action="store_true", help="LLM rubric judging (needs Anthropic credentials)"
         )
         p.add_argument("--judge-model", default="claude-opus-5-5")
+        # ceilings, so a sweep against a metered API cannot run away
+        p.add_argument("--max-episodes", type=int, help="stop after this many episodes")
+        p.add_argument("--max-tokens", type=int, help="stop once the run has used this many tokens")
+        p.add_argument("--max-seconds", type=float, help="stop once the run has taken this long")
+        p.add_argument("--max-usd", type=float, help="stop once the run has cost this much (needs --prices)")
+        p.add_argument(
+            "--prices",
+            help="dollars per million tokens, e.g. 'openai:gpt-5.1=1.25/10,claude:=3/15'. "
+            "The longest matching policy prefix wins",
+        )
 
     p = sub.add_parser("collect", help="fetch recently merged PRs")
     p.add_argument("--repo", action="append", required=True, help="owner/name, repeatable")
