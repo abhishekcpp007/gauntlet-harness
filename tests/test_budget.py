@@ -163,32 +163,32 @@ def test_an_exhausted_budget_stops_before_any_sandbox_starts(tmp_path):
 
 
 def test_no_budget_means_no_gate(tmp_path, monkeypatch):
-    """Passing nothing leaves the runner exactly as it was: the episode gets as far as the policy.
-
-    The sentinel propagates rather than becoming a failed episode, because the runner builds the
-    policy and the env outside its try block. That is current behaviour, not something this test
-    is asking for.
-    """
+    """Passing nothing leaves the runner exactly as it was: the episode reaches the sandbox."""
     from gauntlet_harness import runner
 
     seen = {}
 
-    def fake_make_policy(spec, client=None):
+    def boom(*args, **kwargs):
         seen["called"] = True
         raise RuntimeError("sentinel")
 
-    monkeypatch.setattr(runner, "make_policy", fake_make_policy)
-    with pytest.raises(RuntimeError, match="sentinel"):
-        runner.run([_task()], ["noop"], out_dir=tmp_path, budget=None)
-    assert seen.get("called")  # no gate stood between the job and the policy
+    monkeypatch.setattr(runner, "SWEEnv", boom)
+    (result,) = runner.run([_task()], ["noop"], out_dir=tmp_path, budget=None)
+
+    assert seen.get("called")  # no gate stood between the job and the sandbox
+    assert result.error == "RuntimeError: sentinel"  # and it stayed one episode's problem
 
 
-def test_a_reached_ceiling_gates_before_the_policy(tmp_path, monkeypatch):
-    """The mirror of the test above: with the ceiling reached, the policy is never built."""
+def test_a_reached_ceiling_gates_before_the_sandbox(tmp_path, monkeypatch):
+    """The mirror of the test above: with the ceiling reached, no env is ever built.
+
+    Policy specs are validated once up front, which costs nothing, so the gate sits between
+    that and the expensive part rather than before everything.
+    """
     from gauntlet_harness import runner
 
-    def fake_make_policy(spec, client=None):
+    def boom(*args, **kwargs):
         raise AssertionError("the budget should have stopped this before here")
 
-    monkeypatch.setattr(runner, "make_policy", fake_make_policy)
+    monkeypatch.setattr(runner, "SWEEnv", boom)
     assert runner.run([_task()], ["noop"], out_dir=tmp_path, budget=Budget(max_episodes=0)) == []

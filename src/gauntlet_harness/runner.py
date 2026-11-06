@@ -62,6 +62,11 @@ def run(
     done = {r.episode_id for r in load_results(results_path)}
     lock = threading.Lock()
 
+    # A bad spec is a typo, not an episode failure: say so now rather than after 53 tasks have
+    # each recorded the same error.
+    for spec in policies:
+        make_policy(spec, client=policy_client)
+
     jobs = [
         (task, spec, k)
         for task in tasks
@@ -79,17 +84,21 @@ def run(
                 return None  # the run stops here; what is already written stays written
         eid = episode_id(task, spec, attempt)
         policy = make_policy(spec, client=policy_client)
-        env = SWEEnv(
-            task,
-            max_steps=max_steps,
-            trajectory_path=out_dir / "trajectories" / f"{eid}.jsonl",
-            cache_dir=cache_dir,
-            reward_config=reward_config,
-            judge_client=judge_client,
-            judge_model=judge_model,
-            **(env_kwargs or {}),
-        )
+        # Building the env can fail on its own, a pull that times out or a daemon that went
+        # away, and that is one episode's problem. Before this was inside the try, one such
+        # failure came back out of the worker and took the rest of the sweep with it.
+        env = None
         try:
+            env = SWEEnv(
+                task,
+                max_steps=max_steps,
+                trajectory_path=out_dir / "trajectories" / f"{eid}.jsonl",
+                cache_dir=cache_dir,
+                reward_config=reward_config,
+                judge_client=judge_client,
+                judge_model=judge_model,
+                **(env_kwargs or {}),
+            )
             policy.run(env)
             result = env.result
             if result is None:  # the policy stopped without submitting
@@ -102,8 +111,10 @@ def run(
                 episode_id=eid, instance_id=task.instance_id, policy=spec, error=f"{type(e).__name__}: {e}"
             )
         finally:
-            env.close()
+            if env is not None:
+                env.close()
 
+        actions = getattr(env, "actions", [])  # env is None when it could not be built
         result.episode_id, result.policy, result.attempt = eid, policy.name, attempt
         result.usage = dict(policy.usage)
         if budget is not None:
@@ -117,11 +128,11 @@ def run(
                     "instance_id": task.instance_id,
                     "policy": policy.name,
                     "messages": policy.messages,
-                    "actions": env.actions,
+                    "actions": actions,
                     "prompt": getattr(env, "prompt", ""),
                     "steps": [
                         {"action": a, "obs": o}
-                        for a, o in zip(env.actions, getattr(env, "observations", []), strict=False)
+                        for a, o in zip(actions, getattr(env, "observations", []), strict=False)
                     ],
                     "reward": result.reward,
                     "reward_breakdown": result.reward_breakdown,
