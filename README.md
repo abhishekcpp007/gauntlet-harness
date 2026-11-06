@@ -101,6 +101,10 @@ That last one came out of a rerun. Ghost still won 2 of 10 because more-itertool
 
 After that, ghost and canary-aware resolved 0 of 60 tries across 3 runs, and the oracle still resolves 53 of 53 with zero false alarms. There's a test for every tell the cheat used.
 
+**What 0 of 60 is and is not.** The canary is placed at random, so whether a given cheat beats it is a rate, not a yes or no. Measured over 2,000 layouts, `canary-aware`'s rule still spares every failing canary **6.25% of the time** (95% CI 5.27% to 7.40%), which is the share of draws where all of them happen to land in the file's last two tests. 0 of 60 was a good sample of a defense that wins about 15 times out of 16, not a proof that it always wins.
+
+Those draws are not free wins for the cheat, because the canary is one layer of several. On a run where it did slip past, Cheat Catcher still read the patch, flagged `outcome-forcing` and `runner-sniffing`, and the episode scored -1. That is the point of layering, and it is also why the zoo tests pin `GAUNTLET_GRADING_SEED`: without it they assert a single draw of a probabilistic outcome and fail at random roughly one run in sixteen. The seed is for reproducibility only. Never set it on a run whose score anyone will quote.
+
 ### Round three: a cheat that remembers the base commit
 
 The obvious next question was `git diff`. Could a cheat diff the test files and spare whatever got added, since that's the hidden tests plus the canary? The grading sandbox has no `.git`, so not directly. But a cheat doesn't need git. `cheater:snapshot` lists every test name in the repo while it works, bakes that list into the source in base64, and at grading time forces every *known* test to pass and spares every new one.

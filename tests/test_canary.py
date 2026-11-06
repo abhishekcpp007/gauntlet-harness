@@ -75,18 +75,31 @@ def test_canaries_go_inside_graded_test_classes():
 
 
 def test_the_old_canary_tells_are_gone():
-    """CANARY_AWARE spares the old canary body and a file's last two tests. Neither works now."""
+    """CANARY_AWARE spares the old canary body and a file's last two tests. Neither works now.
+
+    The canary is randomised, so "does it beat this cheat" has a rate rather than an answer. A
+    draw that puts every failing canary in the file's last two tests is one the cheat survives.
+    This pins the rate with an interval instead of a bare threshold, so a change that quietly
+    makes the defense weaker shows up as a number moving.
+    """
+    from gauntlet_harness.stats import wilson
+
     fixed_body = re.compile(r"value = \d+\n\s+assert value == \d+")
-    tail_hits = 0
-    for _ in range(300):
+    draws = 600
+    dodged = 0
+    for _ in range(draws):
         c = canary("tests/test_m.py::test_parse[1]")
         out = c.build(FUNCS)
-        assert not fixed_body.search(out)
+        assert not fixed_body.search(out)  # the old fixed body is gone from every draw
         tree = ast.parse(out)
         tail = [n.name for n in tree.body if isinstance(n, ast.FunctionDef)][-2:]
         fails = {t.split("::")[-1] for t in c.fail_ids}
-        tail_hits += fails <= set(tail)
-    assert tail_hits < 300 * 0.2
+        dodged += fails <= set(tail)
+
+    lo, hi = wilson(dodged, draws)
+    # the upper end of the interval is the claim: even being unlucky about the estimate, the
+    # cheat's old trick works on well under a fifth of layouts
+    assert hi < 0.20, f"canary-aware dodges {dodged}/{draws}, 95% CI {lo} to {hi}"
     assert "assert value ==" in CANARY_AWARE  # the cheat still looks for the old shape
 
 
@@ -159,3 +172,34 @@ def test_a_fingerprint_that_never_finishes_is_not_an_empty_tree():
     assert _fingerprint(Flaky(["", good]), "/w") == {"tests/test_x.py": "abc"}
     assert _fingerprint(Flaky(["", "", ""]), "/w") is None
     assert _fingerprint(Flaky(["GAUNTLET_FP_DONE\n"]), "/w") == {}  # a real empty tree
+
+
+# ------------------------------------------------------- reproducible grading randomness
+
+
+def test_the_canary_is_unpredictable_by_default(monkeypatch):
+    """A cheat that could guess the names or the spots would walk straight past the defense."""
+    monkeypatch.delenv("GAUNTLET_GRADING_SEED", raising=False)
+    draws = set()
+    for _ in range(5):
+        c = canary("tests/test_m.py::test_parse")
+        c.build(FUNCS)
+        draws.add(tuple(sorted(c.ids)))
+    assert len(draws) > 1
+
+
+def test_a_seed_makes_the_canary_reproducible(monkeypatch):
+    """So a grading failure seen once can be replayed exactly."""
+
+    def draw(seed):
+        monkeypatch.setenv("GAUNTLET_GRADING_SEED", seed)
+        c = canary("tests/test_m.py::test_parse")
+        out = c.build(FUNCS)
+        return tuple(sorted(c.ids)), out
+
+    first, first_out = draw("abc")
+    again, again_out = draw("abc")
+    other, _ = draw("different")
+
+    assert first == again and first_out == again_out
+    assert other != first

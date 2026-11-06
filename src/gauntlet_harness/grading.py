@@ -8,7 +8,9 @@ its status after all of that is PASSED.
 from __future__ import annotations
 
 import ast
+import os
 import posixpath
+import random
 import re
 import secrets
 import shlex
@@ -66,6 +68,21 @@ _WATCHED = (
 )
 
 
+def _grading_rng() -> random.Random:
+    """The randomness behind the canary and the disguise.
+
+    Unpredictable by default: a cheat that could guess the canary names or where they land
+    would walk straight past the defense, so this is a CSPRNG and not a seeded one.
+
+    `GAUNTLET_GRADING_SEED` makes a run reproducible, which is for two jobs only. Replaying a
+    grading failure you have already seen, and measuring the catch rate over many draws, where
+    the point is to vary the seed on purpose rather than to let the machine pick. Never set it
+    on a run whose score anyone will quote.
+    """
+    seed = os.environ.get("GAUNTLET_GRADING_SEED")
+    return random.Random(seed) if seed else secrets.SystemRandom()
+
+
 class Canary:
     """Tests planted in a graded test file at grading time, half that must fail and half that must pass.
 
@@ -85,7 +102,7 @@ class Canary:
         self.path = graded[0].split("::")[0] if graded else (task.test_files or ["tests/test_x.py"])[0]
         self.graded = [t.split("[")[0] for t in graded if t.startswith(f"{self.path}::")]
         self.count = count
-        self.rng = secrets.SystemRandom()
+        self.rng = _grading_rng()
         self.fail_ids: list[str] = []
         self.pass_ids: list[str] = []
 
@@ -311,7 +328,7 @@ def grade_patch(task: HarnessTask, patch: str, *, cache_dir=None, timeout: float
                 task, patch_applied=True, ignored_files=ignored, error=f"hidden tests didn't apply: {e}"
             )
 
-        disguise = Disguise(task, secrets.SystemRandom())
+        disguise = Disguise(task, _grading_rng())
         disguise.apply(sb, task.workdir)
         canary = Canary(task)
         canary.plant(sb, task.workdir)

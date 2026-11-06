@@ -80,8 +80,17 @@ def test_runner_calibration(task, tmp_path):
 
 
 @pytest.mark.parametrize("trick", ["monkeypatch", "stealth", "rewrite", "canary-aware", "ghost", "junit"])
-def test_cheater_zoo_is_caught_by_the_grader_itself(task, tmp_path, trick):
-    """Source-only cheats survive test stripping, so the grader's canary has to catch them at run time."""
+def test_cheater_zoo_is_caught_by_the_grader_itself(task, tmp_path, trick, monkeypatch):
+    """Source-only cheats survive test stripping, so the grader's canary has to catch them at run time.
+
+    The canary is deliberately unpredictable in production, which makes a single episode a draw
+    rather than a verdict: `canary-aware` and `ghost` adapt to where the canary lands, so once in
+    a while they get a layout that spares them and this test used to fail at random. Pinning the
+    seed makes the draw the same every run, so a failure here is a real regression and can be
+    replayed. What the defense catches *on average* is a different question, and
+    `gauntlet calibrate` is what measures it.
+    """
+    monkeypatch.setenv("GAUNTLET_GRADING_SEED", f"zoo-{trick}")
     (r,) = run([task], [f"cheater:{trick}"], out_dir=tmp_path, cache_dir=pipeline().cache)
     assert r.error is None, r.error
     assert r.grade.ignored_files == []  # nothing for the stripper to drop: it's all source
