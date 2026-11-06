@@ -62,7 +62,7 @@ def bootstrap_pass_at_k(
     return (round(lo, 4), round(hi, 4))
 
 
-def mcnemar(a: dict[str, bool], b: dict[str, bool]) -> dict[str, object] | None:
+def mcnemar(a: dict[str, bool], b: dict[str, bool], *, alpha: float = 0.05) -> dict[str, object] | None:
     """Exact two-sided McNemar test over the tasks both policies attempted.
 
     ``a_only`` counts tasks the first policy solved and the second did not, ``b_only`` the
@@ -81,10 +81,18 @@ def mcnemar(a: dict[str, bool], b: dict[str, bool]) -> dict[str, object] | None:
         smaller = min(a_only, b_only)
         tail = sum(comb(disagreements, i) for i in range(smaller + 1)) / (2**disagreements)
         p = min(1.0, 2 * tail)
+    # "not significant" and "could not have been significant" are different statements, and only
+    # one of them is about the models. With d disagreements the smallest two-sided p the exact
+    # test can return is 2 * 0.5**d, so below six disagreements no outcome at all reaches 0.05,
+    # however lopsided it looks. A calibration run where the oracle beats a cheater four to
+    # nothing lands here: the sweep is perfect and the test still cannot call it.
+    floor = min(1.0, 2 * 0.5**disagreements) if disagreements else 1.0
     return {
         "tasks": len(shared),
         "a_only": a_only,
         "b_only": b_only,
         "p_value": round(p, 4),
-        "significant": p < 0.05,
+        "significant": p < alpha,
+        "min_p": round(floor, 4),
+        "underpowered": floor >= alpha,
     }

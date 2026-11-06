@@ -129,3 +129,15 @@ def test_the_markdown_shows_the_interval_and_the_comparison():
     assert "McNemar" in text
     # the policy table is sorted by resolve rate, so don't assume which name leads the row
     assert "| a | b |" in text or "| b | a |" in text
+
+
+def test_the_report_separates_underpowered_from_no_difference():
+    rows = [_episode(f"t{i}", "oracle", True) for i in range(4)]
+    rows += [_episode(f"t{i}", "cheater", False) for i in range(4)]
+    summary = summarize(rows)
+    (comparison,) = summary["comparisons"]
+    assert comparison["underpowered"] and not comparison["significant"]
+
+    text = render_markdown(summary)
+    assert "too few tasks" in text and "best possible p = 0.1250" in text
+    assert "not a statement about the models" in text

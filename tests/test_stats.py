@@ -68,7 +68,15 @@ def test_mcnemar_ignores_the_tasks_both_got_right():
     a = {"t1": True, "t2": True, "t3": False}
     b = {"t1": True, "t2": True, "t3": False}
     out = mcnemar(a, b)
-    assert out == {"tasks": 3, "a_only": 0, "b_only": 0, "p_value": 1.0, "significant": False}
+    assert out == {
+        "tasks": 3,
+        "a_only": 0,
+        "b_only": 0,
+        "p_value": 1.0,
+        "significant": False,
+        "min_p": 1.0,
+        "underpowered": True,  # nothing disagreed, so nothing could have been found
+    }
 
 
 def test_mcnemar_small_disagreement_is_not_significant():
@@ -106,3 +114,50 @@ def test_mcnemar_uses_only_the_shared_tasks():
 
 def test_mcnemar_needs_an_overlap():
     assert mcnemar({"a": True}, {"b": True}) is None
+
+
+# --------------------------------------------- not significant vs could not have been
+
+
+def test_a_perfect_sweep_of_four_tasks_cannot_reach_significance():
+    """The calibration case: the oracle beats a cheater 4-0 and the test still cannot call it."""
+    a = {f"t{i}": True for i in range(4)}
+    b = {f"t{i}": False for i in range(4)}
+    out = mcnemar(a, b)
+    assert (out["a_only"], out["b_only"]) == (4, 0)
+    assert out["p_value"] == 0.125 and not out["significant"]
+    assert out["underpowered"] and out["min_p"] == 0.125
+
+
+def test_six_disagreements_is_where_significance_becomes_possible():
+    for n, powered in ((5, False), (6, True)):
+        a = {f"t{i}": True for i in range(n)}
+        b = {f"t{i}": False for i in range(n)}
+        out = mcnemar(a, b)
+        assert out["underpowered"] is not powered, (n, out)
+    # and at six a clean sweep does land
+    a = {f"t{i}": True for i in range(6)}
+    b = {f"t{i}": False for i in range(6)}
+    assert mcnemar(a, b)["significant"]
+
+
+def test_a_real_finding_is_not_called_underpowered():
+    a = {f"t{i}": i < 9 for i in range(20)}
+    b = {f"t{i}": i >= 9 and i < 10 for i in range(20)}
+    out = mcnemar(a, b)
+    assert out["significant"] and not out["underpowered"]
+
+
+def test_plenty_of_disagreement_and_no_difference_is_its_own_answer():
+    """Eight each way: the test had the power to find a gap and did not."""
+    a = {f"t{i}": i < 8 for i in range(16)}
+    b = {f"t{i}": i >= 8 for i in range(16)}
+    out = mcnemar(a, b)
+    assert (out["a_only"], out["b_only"]) == (8, 8)
+    assert not out["significant"] and not out["underpowered"]
+
+
+def test_min_p_floors_at_one_when_nothing_disagreed():
+    a = b = {"t1": True, "t2": False}
+    out = mcnemar(a, b)
+    assert out["min_p"] == 1.0 and out["underpowered"]

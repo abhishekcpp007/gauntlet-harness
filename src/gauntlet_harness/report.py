@@ -224,14 +224,28 @@ def render_markdown(summary: dict[str, Any]) -> str:
             "tasks they disagreed on count, and a gap that isn't significant is a gap you can't",
             "report as one.",
             "",
-            "| A | B | Only A | Only B | p | Significant |",
+            "| A | B | Only A | Only B | p | Verdict |",
             "|---|---|---|---|---|---|",
         ]
         for c in summary["comparisons"]:
-            mark = "yes" if c["significant"] else "no"
+            if c["significant"]:
+                mark = "significant"
+            elif c["underpowered"]:
+                # too few disagreements for any outcome to reach the threshold
+                mark = f"too few tasks (best possible p = {c['min_p']:.4f})"
+            else:
+                mark = "no difference found"
             lines.append(
                 f"| {c['a']} | {c['b']} | {c['a_only']} | {c['b_only']} | {c['p_value']:.4f} | {mark} |"
             )
+        if any(c["underpowered"] for c in summary["comparisons"]):
+            lines += [
+                "",
+                '"Too few tasks" means the test could not have returned a significant result for',
+                "that pair whatever happened, because the two policies disagreed on too few tasks.",
+                "It is not a statement about the models. Six disagreements is the minimum for any",
+                "outcome to reach p < 0.05 under an exact paired test.",
+            ]
     return "\n".join(lines) + "\n"
 
 

@@ -343,12 +343,20 @@ A resolve rate off 53 tasks is an estimate, not a measurement, and most publishe
 | openai:gpt-5.1         | 0.396    | 0.396  | 0.264 to 0.528 | 0.396  | 53       |
 | claude:claude-opus-5-5 | 0.340    | 0.340  | 0.207 to 0.472 | 0.340  | 53       |
 
-| A              | B                      | Only A | Only B | p      | Significant |
-|----------------|------------------------|--------|--------|--------|-------------|
-| openai:gpt-5.1 | claude:claude-opus-5-5 | 14     | 11     | 0.6900 | no          |
+| A              | B                      | Only A | Only B | p      | Verdict             |
+|----------------|------------------------|--------|--------|--------|---------------------|
+| openai:gpt-5.1 | claude:claude-opus-5-5 | 14     | 11     | 0.6900 | no difference found |
 ```
 
 Read as a leaderboard that is a 5.6 point win. Read honestly, the two intervals overlap almost entirely and the paired test says p = 0.69, so this run cannot tell the models apart. The harness says so rather than letting you quote the gap.
+
+There is a third verdict, and the calibration run is what surfaced it. The oracle beat every cheater four games to nothing on a four-task sample, and a plain significant-or-not column called all of those "no". That reading is wrong in a way worth catching: with four disagreements the smallest p an exact paired test can return is 0.125, so **no outcome at all** could have reached 0.05. The sweep was perfect and the test had no power to say so.
+
+```
+| oracle | cheater | 4 | 0 | 0.1250 | too few tasks (best possible p = 0.1250) |
+```
+
+Six disagreements is the threshold where any outcome can clear p < 0.05. Below that the report says the test could not have found a difference rather than that it did not find one, because those are different statements and only one of them is about the models.
 
 Two choices behind those numbers. The interval is a bootstrap that resamples **tasks**, not episodes, because several attempts on one task are not independent draws and treating them as such makes the interval far too narrow. The comparison is **McNemar's exact test**, because both policies ran the same tasks, so only the tasks where they disagreed carry information, and at these counts the exact binomial beats the chi-square approximation.
 
