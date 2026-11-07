@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.12' and sys_platform == 'emscripten'",
@@ -283,11 +283,15 @@ claude = [
 gym = [
     { name = "gymnasium" },
 ]
+openai = [
+    { name = "openai" },
+]
 
 [package.dev-dependencies]
 dev = [
     { name = "anthropic" },
     { name = "gymnasium" },
+    { name = "openai" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -301,14 +305,16 @@ requires-dist = [
     { name = "gauntlet-timemachine", git = "https://github.com/abhishekcpp007/gauntlet-timemachine" },
     { name = "gymnasium", marker = "extra == 'gym'", specifier = ">=1.0" },
     { name = "httpx", specifier = ">=0.27" },
+    { name = "openai", marker = "extra == 'openai'", specifier = ">=2.0" },
     { name = "pydantic", specifier = ">=2.6" },
 ]
-provides-extras = ["claude", "gym"]
+provides-extras = ["claude", "openai", "gym"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "anthropic", specifier = ">=2.3" },
     { name = "gymnasium", specifier = ">=1.0" },
+    { name = "openai", specifier = ">=2.0" },
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.6" },
 ]
@@ -316,7 +322,7 @@ dev = [
 [[package]]
 name = "gauntlet-repo2env"
 version = "0.1.0"
-source = { git = "https://github.com/abhishekcpp007/gauntlet-repo2env#62be3f048b85d3f36c620a5ea5c0ac34e984b31a" }
+source = { git = "https://github.com/abhishekcpp007/gauntlet-repo2env#f9bc558abbe2bb637c94f004e77da3c78a9583b7" }
 dependencies = [
     { name = "gauntlet-sandbox" },
     { name = "pydantic" },
@@ -325,7 +331,7 @@ dependencies = [
 [[package]]
 name = "gauntlet-sandbox"
 version = "0.1.0"
-source = { git = "https://github.com/abhishekcpp007/gauntlet-sandbox#6208d2429448a3f92ec8437f538c3fa7595e406c" }
+source = { git = "https://github.com/abhishekcpp007/gauntlet-sandbox#5b54516db9365550749e3ff145b79a7d527e8f90" }
 dependencies = [
     { name = "docker" },
     { name = "pydantic" },
@@ -383,8 +389,8 @@ name = "httpcore2"
 version = "2.16.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "h11", marker = "python_full_version < '3.12' or sys_platform != 'emscripten'" },
-    { name = "truststore", marker = "python_full_version < '3.12' or sys_platform != 'emscripten'" },
+    { name = "h11" },
+    { name = "truststore" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c0/61/afa9d6b7452f9eca73f73d45324eb0bb52f098fd5e6049bf6b8263be9b4e/httpcore2-2.16.0.tar.gz", hash = "sha256:c72cd0413563b17e1cd8354677dff887466f8ec2551679759e93126534428643", size = 69886, upload-time = "2026-10-21T07:09:45.31Z" }
 wheels = [
@@ -720,6 +726,23 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/b5/4da41c328788f575838f97a098fe8ca691ebc6f6fd73ad4a262ee40b184d/numpy-2.5.4-cp315-cp315t-win32.whl", hash = "sha256:ad62a416ddcf863bf44bba76fbf6b53366ab0692e294f51cae4b5fbe0d246788", size = 6335804, upload-time = "2026-10-10T20:05:19.921Z" },
     { url = "https://files.pythonhosted.org/packages/98/94/6482ddfa3d312490cb9358f375bf2ad56427dbea8769187158e94d653753/numpy-2.5.4-cp315-cp315t-win_amd64.whl", hash = "sha256:38f47be9f74ab870d2633b5456ae519c43758a8d1fd05342f0ce4ecc034396ee", size = 12890095, upload-time = "2026-10-10T20:05:21.875Z" },
     { url = "https://files.pythonhosted.org/packages/48/7f/c2d1b436b6e7cfebac140c2579a298344b85f2991a2ce5c3615cefb29400/numpy-2.5.4-cp315-cp315t-win_arm64.whl", hash = "sha256:7a14a461d9340f1b46b8648578aed9cdb8b3b018a8fac6c1dde2c9192a01a87f", size = 10883718, upload-time = "2026-10-10T20:05:28.547Z" },
+]
+
+[[package]]
+name = "openai"
+version = "3.46.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "httpx2" },
+    { name = "jiter" },
+    { name = "pydantic" },
+    { name = "sniffio" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/34/b6/23cddcb571d6eafe7b4bb58c7e0a068076121b7b001b776179994cca6a03/openai-3.46.0.tar.gz", hash = "sha256:fb34cd8cab6809ad0aa8dc42493fa622aaa87c814fd8e67a6fb3fa1f1e5d952d", size = 2408622, upload-time = "2026-11-05T00:55:55.463Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f4/63/454e6faad68ac903e7669932db8d0a91c95dfca829ec9476e52045b17684/openai-3.46.0-py3-none-any.whl", hash = "sha256:7b650117e9bf539029bf880c2eff94a26f281394f6572284efa5d068d4b1c98e", size = 2438918, upload-time = "2026-11-05T00:55:53.301Z" },
 ]
 
 [[package]]
