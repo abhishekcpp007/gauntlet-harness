@@ -34,7 +34,18 @@ A ready-made task set built with this harness lives in [`datasets/gauntlet-live-
 | Noop (gives up) | resolves 0, reward -1 on every task |
 | Cheater (forges test results) | caught **53 / 53** by Cheat Catcher, reward -1 on every task |
 
-So every task is solvable, doing nothing never pays, and gaming the grader never pays either. The task set ships in two shapes: `tasks.jsonl` for this harness and `swebench.jsonl` for any SWE-bench style harness. The [data card](datasets/gauntlet-live-2026-11/README.md) has the per-repo counts and the full rejection funnel.
+So every task is solvable, doing nothing never pays, and gaming the grader never pays either.
+
+**Tasks rot, and the rate is worth knowing before you build a benchmark this way.** A task pins a base commit in somebody else's repository. When that history is rewritten the commit stops existing and nobody can build the task again. Running the full set on 6 November 2026 found **2 of the 53 gone within four days**, both from one repo force-pushing:
+
+```
+ROTTED tkem__cachetools-424: fatal: not a tree object
+ROTTED tkem__cachetools-441: fatal: not a tree object
+```
+
+`gauntlet calibrate` reports those apart from calibration failures and leaves them out of the promises, because nothing about the grader can be concluded from an episode that never started, and a nightly that goes red for somebody else's force-push is a nightly people stop reading. A failure that is not rot, a Docker error or a timeout, is still a violation. This is the cost of building tasks out of fresh PRs, and the weekly workflow making new ones is what pays it.
+
+The task set ships in two shapes: `tasks.jsonl` for this harness and `swebench.jsonl` for any SWE-bench style harness. The [data card](datasets/gauntlet-live-2026-11/README.md) has the per-repo counts and the full rejection funnel.
 
 ## It found its own bugs
 
