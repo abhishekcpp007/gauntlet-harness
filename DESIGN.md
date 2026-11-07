@@ -65,3 +65,64 @@ report (report.py)
 5. The problem statement must not contain the gold patch's distinctive added lines.
 6. Grader-owned paths (`/tmp/gauntlet-*`) don't exist in the agent sandbox.
 7. Candidate edits to tests, conftest.py, pytest.ini and tox.ini are dropped before grading.
+
+## What a second language would actually take
+
+Everything here is Python and pytest. `detect.py` already carries a `Stack.language` with markers
+for node, go, rust, java and ruby, and `build_env` raises `UnsupportedRepo` for all of them. This
+section is what I measured rather than what I assumed, because I twice wrote down the wrong
+summary of it.
+
+**Status parsing is already generic.** `parse_junit` was fed output from five runners and read
+every one correctly:
+
+| runner | cases | statuses |
+|---|---|---|
+| pytest | 2 | passed, failed |
+| jest-junit | 2 | passed, failed |
+| vitest `--reporter=junit` | 2 | passed, failed |
+| go, gotestsum `--junitfile` | 2 | passed, failed |
+| cargo nextest, junit profile | 2 | passed, failed |
+
+**Test identity is not.** The same probe shows where it breaks, and it is one function,
+`_test_id` in repo2env's `testrun.py`:
+
+```
+pytest          tests/test_calc.py::test_add
+vitest          src/calc.test.ts::adds numbers
+go              example.com/calc::TestAdd          package, not a file
+cargo-nextest   calc::tests::adds
+jest-junit      calc adds numbers::calc adds numbers   name duplicated, no file at all
+```
+
+pytest writes a `file` attribute on each `testcase` and the others mostly do not, so `_test_id`
+falls back to `classname::name`. That matters more than it looks:
+
+- `f2p` and `p2p` are lists of test ids, so an id that is unstable or carries no file breaks task
+  matching across runs
+- `_test_file(target)` splits an id on `::` to find the file to plant the canary in. With the jest
+  shape there is no file in the id at all, so there is nowhere to plant
+
+So the blocker is not result handling and not the canary strategy. It is **per-runner id
+normalisation**, and it has to come first.
+
+**The canary generalises further than I claimed.** Its strategy is language-agnostic: plant some
+tests that must fail and some that must pass, scatter them among the file's own tests, name them
+like their neighbours, then check afterwards that the must-fail ones failed. Only three things are
+Python-bound, and each is small: parsing the file to find test functions and classes
+(`ast.parse`), emitting a body, and the id format. `Disguise`, which renames the graded tests
+during grading, is in the same shape.
+
+**The order to do it in.**
+
+1. Normalise test ids per runner, with the probe above as the test. Nothing else can be trusted
+   until an id means the same thing twice.
+2. Put the canary's emit and parse behind an interface, leaving the strategy where it is. Do this
+   *with* the second language, not before it: a refactor with no second caller is speculative, and
+   this is the component least worth breaking on a guess.
+3. Then `detect.py` and `install_script` for the language, which is the easy part and the part
+   that looks like the whole job from the outside.
+
+Shipping an adapter without step 2 would mean a language whose tasks have no canary, which is
+weaker than not supporting it at all. Anyone running the harness would reasonably assume the
+anti-cheat applies everywhere.
