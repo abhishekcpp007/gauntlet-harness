@@ -84,19 +84,29 @@ every one correctly:
 | go, gotestsum `--junitfile` | 2 | passed, failed |
 | cargo nextest, junit profile | 2 | passed, failed |
 
-**Test identity is not.** The same probe shows where it breaks, and it is one function,
-`_test_id` in repo2env's `testrun.py`:
+**Test identity was not, and half of it is now fixed.** `parse_junit` flattened the document
+with `root.iter("testcase")`, and a testcase element has no parent pointer, so a `file` recorded
+on the enclosing `testsuite` was never seen. jest-junit writes it there and vitest uses the
+suite's name for it. Walking suite by suite instead:
 
 ```
-pytest          tests/test_calc.py::test_add
-vitest          src/calc.test.ts::adds numbers
-go              example.com/calc::TestAdd          package, not a file
-cargo-nextest   calc::tests::adds
-jest-junit      calc adds numbers::calc adds numbers   name duplicated, no file at all
+                before                                  after
+pytest          tests/test_calc.py::test_add            unchanged
+vitest          src/calc.test.ts::adds numbers          unchanged
+jest-junit      calc adds numbers::calc adds numbers    src/__tests__/calc.test.js::calc adds numbers
+go              example.com/calc::TestAdd               unchanged, and correctly so
+cargo-nextest   calc::tests::adds                       unchanged, and correctly so
 ```
 
-pytest writes a `file` attribute on each `testcase` and the others mostly do not, so `_test_id`
-falls back to `classname::name`. That matters more than it looks:
+All 45,444 test ids recorded across the 53 live tasks round-trip unchanged, which was the part
+that had to hold.
+
+Go and Rust are not an oversight. `go test` and `cargo nextest` address tests by package and
+path within it, and there is no file anywhere in their output. A fallback that invented one
+would be a lie, so either language needs a real mapping from package to source file before its
+tasks can be graded. That is still open.
+
+Why any of this matters:
 
 - `f2p` and `p2p` are lists of test ids, so an id that is unstable or carries no file breaks task
   matching across runs
@@ -115,8 +125,9 @@ during grading, is in the same shape.
 
 **The order to do it in.**
 
-1. Normalise test ids per runner, with the probe above as the test. Nothing else can be trusted
-   until an id means the same thing twice.
+1. Normalise test ids per runner, with the probe above as the test. **Done for pytest, jest and
+   vitest.** Still open for Go and Rust, which need a package-to-file mapping rather than a
+   fallback. Nothing else can be trusted until an id means the same thing twice.
 2. Put the canary's emit and parse behind an interface, leaving the strategy where it is. Do this
    *with* the second language, not before it: a refactor with no second caller is speculative, and
    this is the component least worth breaking on a guess.

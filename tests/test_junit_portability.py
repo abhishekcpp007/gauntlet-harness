@@ -68,26 +68,34 @@ def test_pytest_ids_carry_the_file_which_is_what_the_rest_depends_on():
     ]
 
 
-@pytest.mark.parametrize("runner", ["jest", "go", "rust"])
-def test_other_runners_give_ids_with_no_file_in_them(runner):
-    """The blocker, pinned.
+@pytest.mark.parametrize("runner", ["jest", "vitest"])
+def test_the_javascript_runners_now_give_file_based_ids(runner):
+    """Fixed in repo2env by reading the file off the enclosing suite instead of the case.
 
-    `f2p` and `p2p` are lists of ids, and `_test_file` finds the canary's home by splitting an
-    id on `::`. An id with no file in it breaks both. Normalising ids per runner is step one of
-    supporting a second language, and this fails the day somebody does it.
+    jest-junit records it on the testsuite and vitest uses the suite's name for it, so
+    flattening the document with `iter("testcase")` lost it. This is step one of DESIGN.md's
+    order, done for the JS runners.
     """
     for test_id in parse_junit(RUNNERS[runner]):
         head = test_id.split("::")[0]
-        assert "/" not in head or not head.endswith((".js", ".ts", ".go", ".rs")), (
-            f"{runner} ids now look file-based ({test_id!r}); if that was deliberate, "
-            "update DESIGN.md and the normalisation plan"
-        )
+        assert head.endswith((".js", ".ts")), f"{runner} lost its file again: {test_id!r}"
 
 
-def test_jest_duplicates_the_name_into_the_classname():
-    """jest-junit sets classname to the full test name, so the id says it twice."""
-    ids = sorted(parse_junit(JEST))
-    assert ids == [
-        "calc adds numbers::calc adds numbers",
-        "calc divides numbers::calc divides numbers",
-    ]
+@pytest.mark.parametrize("runner", ["go", "rust"])
+def test_go_and_rust_ids_still_name_a_package_not_a_file(runner):
+    """Not a gap to close by guessing.
+
+    `go test` and `cargo nextest` address tests by package and path within it, and there is no
+    file anywhere in their JUnit output. Inventing one would be a lie, so a task in either
+    language needs a real mapping rather than a fallback, and that is still open.
+    """
+    for test_id in parse_junit(RUNNERS[runner]):
+        head = test_id.split("::")[0]
+        assert not head.endswith((".go", ".rs")), f"{runner} now names a file: {test_id!r}"
+
+
+def test_an_id_with_no_file_does_not_repeat_the_name():
+    """Some runners set classname to the test name. Saying it twice helps nobody."""
+    xml = """<testsuite name="s" tests="1">
+    <testcase classname="adds numbers" name="adds numbers"/></testsuite>"""
+    assert sorted(parse_junit(xml)) == ["adds numbers"]
