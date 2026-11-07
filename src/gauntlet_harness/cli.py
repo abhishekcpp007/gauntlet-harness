@@ -288,12 +288,42 @@ CALIBRATION_POLICIES = [
 ]
 
 
+# A task pins a base commit in somebody else's repository. When that history is rewritten the
+# commit stops existing and the task cannot be built by anyone, ever again. That is the task
+# rotting, not the harness breaking, and calling it a violation trains people to ignore the
+# nightly. Measured 6 Nov 2026: 2 of the 53 live tasks rotted within four days, both from one
+# repo force-pushing.
+ROT_MARKERS = (
+    "not a tree object",
+    "bad object",
+    "couldn't find remote ref",
+    "did not match any file(s) known to git",
+    "reference is not a tree",
+)
+
+
+def is_task_rot(error: str | None) -> bool:
+    """True when the error says the upstream commit this task pins no longer exists."""
+    return bool(error) and any(marker in error.lower() for marker in ROT_MARKERS)
+
+
+def rotted_tasks(results: list) -> dict[str, str]:
+    """Instance ids whose upstream history was rewritten, mapped to the error that says so."""
+    return {r.instance_id: r.error for r in results if is_task_rot(r.error)}
+
+
 def calibration_violations(results: list) -> list[str]:
-    """What must always hold on a sound harness. Each string is one broken promise."""
+    """What must always hold on a sound harness. Each string is one broken promise.
+
+    A task whose upstream commit has gone is left out: nothing about the harness can be
+    concluded from an episode that never got to run.
+    """
     bad = []
     for r in results:
         where = f"{r.policy} on {r.instance_id}"
         g = r.grade
+        if is_task_rot(r.error):
+            continue
         if r.error:
             bad.append(f"{where}: episode crashed: {r.error}")
         elif r.policy == "oracle":
@@ -332,10 +362,23 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
         r for r in load_results(out / "results.jsonl") if r.instance_id in picked and r.policy in policies
     ]
     print(render_markdown(summarize(results)))
+    rotted = rotted_tasks(results)
+    if rotted:
+        from .stats import wilson
+
+        lo, hi = wilson(len(rotted), len(picked)) or (0.0, 0.0)
+        print(
+            f"\n{len(rotted)} of {len(picked)} tasks have rotted: the commit they pin is gone from "
+            f"the upstream repository, so nobody can build them. 95% CI {lo:.1%} to {hi:.1%}."
+        )
+        for iid, err in sorted(rotted.items()):
+            print(f"  ROTTED {iid}: {err}")
+        print("  Rebuild the task set to replace them. This is not a harness failure.")
     bad = calibration_violations(results)
     for line in bad:
         print(f"VIOLATION {line}")
-    print(f"{len(results)} episodes, {len(bad)} violation(s)")
+    judged = len(results) - sum(1 for r in results if is_task_rot(r.error))
+    print(f"{len(results)} episodes, {judged} judged, {len(bad)} violation(s)")
     return 1 if bad else 0
 
 
