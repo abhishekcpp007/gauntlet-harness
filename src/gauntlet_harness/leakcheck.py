@@ -15,6 +15,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from .runners import runner_for
 from .sandboxing import boot, cached_clone
 from .schema import HarnessTask
 
@@ -22,6 +23,10 @@ MIN_LINE = 20
 _BORING = re.compile(r"^[\W_]*$|^(?:return|pass|else:|try:|finally:|continue|break)\b.{0,12}$")
 _IMPORT = re.compile(r"^(?:from\s+\S+\s+)?import\s")  # imports name things, they don't identify a fix
 _TEST_DEF = re.compile(r"^\+\s*(?:async\s+)?def\s+(test\w*)\s*\(", re.MULTILINE)
+# it('adds two numbers', ...) and friends. The quoted title is kept with its call so the needle
+# is a line of test code, not a phrase that could turn up in a README.
+_JS_TEST_CALL = re.compile(r"""^\+\s*((?:it|test)(?:\.\w+)?\(\s*(['"`])(?:(?!\2).){8,}\2)""", re.MULTILINE)
+_JS_IMPORT = re.compile(r"^(?:import\s|export\s.*\sfrom\s|(?:const|let|var)\s.*=\s*require\()")
 
 
 class Check(BaseModel):
@@ -60,6 +65,7 @@ def distinctive_added_lines(patch: str, *, min_len: int = MIN_LINE) -> list[str]
             or line in seen
             or _BORING.match(line)
             or _IMPORT.match(line)
+            or _JS_IMPORT.match(line)
         ):
             continue
         if not re.search(r"[A-Za-z0-9]", line):
@@ -71,6 +77,13 @@ def distinctive_added_lines(patch: str, *, min_len: int = MIN_LINE) -> list[str]
 
 def new_test_names(test_patch: str) -> list[str]:
     return sorted(set(_TEST_DEF.findall(test_patch)))
+
+
+def new_test_needles(test_patch: str, runner: str = "pytest") -> list[str]:
+    """What to search a sandbox for to find the hidden tests by name."""
+    if runner == "vitest":
+        return sorted({m[0] for m in _JS_TEST_CALL.findall(test_patch)})
+    return [f"def {n}(" for n in new_test_names(test_patch)]
 
 
 def statement_leaks(statement: str, gold_patch: str) -> list[str]:
@@ -107,13 +120,24 @@ def _present_at_base(repo_path: Path, sha: str, needles: list[str]) -> set[str]:
 _STDLIB = re.compile(r"^/usr/(local/)?lib/python3\.\d+/(?!site-packages/|dist-packages/)")
 
 
+# The same for a node image: node's headers, and the npm, yarn and corepack it ships with.
+_NODE_BASE = re.compile(r"^(/usr/local/lib/node_modules/|/usr/local/include/node/|/opt/yarn)")
+
+
 def from_base_image(path: str) -> bool:
-    return bool(_STDLIB.match(path))
+    return bool(_STDLIB.match(path) or _NODE_BASE.match(path))
 
 
 def project_packages(task: HarnessTask) -> set[str]:
-    """Import names the PR's code lives under: src/packaging/x.py and packaging/x.py give packaging."""
+    """Import names the PR's code lives under: src/packaging/x.py and packaging/x.py give packaging.
+
+    For a node task it's the name the package is published under, since that's the folder a copy
+    of it would sit in under node_modules.
+    """
     names: set[str] = set()
+    if runner_for(task).language == "node":
+        name = task.validation.get("package_name")
+        return {name} if name else set()
     for path in re.findall(r"^\+\+\+ b/(\S+\.py)$", task.gold_patch, re.MULTILINE):
         parts = [p for p in path.split("/") if p]
         if parts and parts[0] == "src":
@@ -134,6 +158,13 @@ def counts_as_leak(path: str, packages: set[str]) -> bool:
         if marker in parts:
             inside = parts[parts.index(marker) + 1 :]
             return any(seg in packages or seg.split("-")[0] in packages for seg in inside)
+    if "node_modules" in parts:
+        # node_modules/tomli/... or node_modules/@scope/name/..., at any depth: pnpm nests the
+        # real folders under node_modules/.pnpm/<name>@<version>/node_modules/<name>
+        last = len(parts) - 1 - parts[::-1].index("node_modules")
+        inside = parts[last + 1 :]
+        name = "/".join(inside[:2]) if inside and inside[0].startswith("@") else "".join(inside[:1])
+        return name in packages
     return True
 
 
@@ -149,7 +180,8 @@ def leakcheck(task: HarnessTask, *, cache_dir: Path | None = None, grep_timeout:
     repo = cached_clone(task.repo, cache_dir)
     hidden = distinctive_added_lines(task.test_patch)
     gold = distinctive_added_lines(task.gold_patch)
-    names = [f"def {n}(" for n in new_test_names(task.test_patch)]
+    runner = runner_for(task)
+    names = new_test_needles(task.test_patch, runner.name)
     at_base = _present_at_base(repo.path, task.base_commit, [*hidden, *gold, *names])
     hidden = [n for n in hidden if n not in at_base]
     gold = [n for n in gold if n not in at_base]
@@ -178,11 +210,7 @@ def leakcheck(task: HarnessTask, *, cache_dir: Path | None = None, grep_timeout:
         )
 
         # 4. the network
-        res = sb.exec(
-            'python -c "import socket; socket.setdefaulttimeout(3); '
-            "socket.create_connection(('1.1.1.1', 443))\" 2>/dev/null && echo OPEN || echo BLOCKED",
-            timeout=20,
-        )
+        res = sb.exec(runner.network_probe, timeout=20)
         checks["network"] = Check(ok="BLOCKED" in res.stdout, detail=res.stdout.strip())
 
         # 5. environment variables

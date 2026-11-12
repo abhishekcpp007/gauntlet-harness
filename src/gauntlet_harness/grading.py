@@ -13,19 +13,20 @@ import posixpath
 import random
 import re
 import secrets
-import shlex
 
 from gauntlet_repo2env import split_patch, strip_test_changes
 
+from . import jstests
+from .runners import PYTEST, runner_for
 from .sandboxing import boot
 from .schema import ALL_KINDS, TARGET_KINDS, GradeResult, HarnessTask, Status
 from .testing import PatchFailed, apply_patch, run_suite
 
 
-def _changed_python_files(patch: str) -> list[str]:
+def _changed_source_files(patch: str, suffixes: tuple[str, ...] = (".py",)) -> list[str]:
     files: list[str] = []
     for paths, _ in split_patch(patch):
-        files.extend(p for p in paths if p.endswith(".py"))
+        files.extend(p for p in paths if p.endswith(suffixes))
     return sorted(set(files))
 
 
@@ -60,12 +61,10 @@ def _body(rng, ok: bool) -> list[str]:
     return [*setup, f"assert {expr} == {good if ok else bad}"]
 
 
-# What the integrity check hashes before and after the run: anything that decides what pytest
-# collects or how it reports. A change during the run means something rewrote them.
-_WATCHED = (
-    "-name 'test*.py' -o -name '*_test.py' -o -name conftest.py -o -name pytest.ini "
-    "-o -name .pytest.ini -o -name tox.ini -o -name setup.cfg -o -name pyproject.toml"
-)
+# What the integrity check hashes before and after the run: anything that decides what the
+# runner collects or how it reports. A change during the run means something rewrote them.
+# The list is per runner and lives in runners.py; this is the pytest one.
+_WATCHED = PYTEST.watched
 
 
 def _grading_rng() -> random.Random:
@@ -99,8 +98,12 @@ class Canary:
 
     def __init__(self, task: HarnessTask, *, count: int = 2) -> None:
         graded = [*task.targets, *task.p2p]
+        self.runner = runner_for(task).name
         self.path = graded[0].split("::")[0] if graded else (task.test_files or ["tests/test_x.py"])[0]
-        self.graded = [t.split("[")[0] for t in graded if t.startswith(f"{self.path}::")]
+        if self.runner == "pytest":
+            self.graded = [t.split("[")[0] for t in graded if t.startswith(f"{self.path}::")]
+        else:  # a title is free text, a bracket in it is part of the name
+            self.graded = [t for t in graded if t.startswith(f"{self.path}::")]
         self.count = count
         self.rng = _grading_rng()
         self.fail_ids: list[str] = []
@@ -116,7 +119,14 @@ class Canary:
         A canary lives where this file's graded tests live: at module level next to plain test
         functions, or as a method inside a graded test class (unittest style included). A
         file of class-based tests with stray top-level functions would give them away.
+
+        The same idea for vitest, where the container is a describe block: see jstests.py.
         """
+        if self.runner == "vitest":
+            out, self.fail_ids, self.pass_ids = jstests.plant_canaries(
+                current, self.path, self.graded, self.rng, self.count
+            )
+            return out
         rng = self.rng
         try:
             tree = ast.parse(current)
@@ -229,15 +239,28 @@ class Disguise:
 
     def __init__(self, task: HarnessTask, rng) -> None:
         self.rng = rng
+        self.runner = runner_for(task).name
         self.by_file: dict[str, set[tuple[str | None, str]]] = {}
+        self.back: dict[str, str] = {}  # renamed id (no params) -> real id
+        self.rules: list[tuple[str, str]] = []  # vitest only: (regex, ending) for it.each titles
+        if self.runner == "vitest":
+            # the whole id is kept: a vitest title is free text and isn't split into parts here
+            for test in (t for k in TARGET_KINDS for t in getattr(task, k)):
+                self.by_file.setdefault(test.split("::", 1)[0], set()).add((None, test))
+            return
         for test in (t for k in TARGET_KINDS for t in getattr(task, k)):
             path, *rest = test.split("[")[0].split("::")
             if 1 <= len(rest) <= 2:
                 cls, name = (rest[0], rest[1]) if len(rest) == 2 else (None, rest[0])
                 self.by_file.setdefault(path, set()).add((cls, name))
-        self.back: dict[str, str] = {}  # renamed id (no params) -> real id
 
     def rename(self, source: str, path: str) -> str:
+        if self.runner == "vitest":
+            targets = sorted(t for _, t in self.by_file.get(path, ()))
+            out, back, rules = jstests.rename_targets(source, path, targets, self.rng)
+            self.back.update(back)
+            self.rules.extend(rules)
+            return out
         try:
             tree = ast.parse(source)
         except SyntaxError:
@@ -277,6 +300,8 @@ class Disguise:
                 sb.write_file(full, renamed)
 
     def restore(self, statuses: dict) -> dict:
+        if self.runner == "vitest":
+            return {jstests.restore_id(t, self.back, self.rules): status for t, status in statuses.items()}
         out = {}
         for test, status in statuses.items():
             base, bracket, params = test.partition("[")
@@ -284,7 +309,7 @@ class Disguise:
         return out
 
 
-def _fingerprint(sb, workdir: str, tries: int = 3) -> dict[str, str] | None:
+def _fingerprint(sb, workdir: str, tries: int = 3, runner=PYTEST) -> dict[str, str] | None:
     """sha256 of every watched file, or None when the sandbox couldn't say.
 
     Under load the exec can come back empty or cut off. Read as "every file is gone", that
@@ -292,7 +317,7 @@ def _fingerprint(sb, workdir: str, tries: int = 3) -> dict[str, str] | None:
     never mistaken for an empty tree.
     """
     cmd = (
-        f"find . -path ./.git -prune -o -type f \\( {_WATCHED} \\) -print0 2>/dev/null "
+        f"find . {runner.prune} -type f \\( {runner.watched} \\) -print0 2>/dev/null "
         "| xargs -0 -r sha256sum 2>/dev/null; echo GAUNTLET_FP_DONE"
     )
     for _ in range(tries):
@@ -341,6 +366,7 @@ def grade_patch(
         from .profiles import profile_for
 
         timeout = profile_for(task).grade_timeout
+    runner = runner_for(task)
     kept, ignored = strip_test_changes(patch, task.to_repo2env())
     sb = boot(task, apply_tests=False, baseline_git=False, timeout=timeout, record=False, cache_dir=cache_dir)
     try:
@@ -359,17 +385,19 @@ def grade_patch(
         disguise.apply(sb, task.workdir)
         canary = Canary(task)
         canary.plant(sb, task.workdir)
-        before = _fingerprint(sb, task.workdir)
+        before = _fingerprint(sb, task.workdir, runner=runner)
 
         compile_errors = []
-        for path in _changed_python_files(kept):
-            q = shlex.quote(path)
-            res = sb.exec(f"test ! -f {q} || python -m py_compile {q}", workdir=task.workdir, timeout=60)
+        for path in _changed_source_files(kept, runner.source_suffixes):
+            check = runner.compile_check(path)
+            if check is None:
+                continue
+            res = sb.exec(check, workdir=task.workdir, timeout=60)
             if not res.ok:
                 compile_errors.append(f"{path}: {(res.stderr or res.stdout).strip()[-300:]}")
 
-        statuses = run_suite(sb, task.workdir, task.test_scope or None, timeout=timeout)
-        after = _fingerprint(sb, task.workdir)
+        statuses = run_suite(sb, task.workdir, task.test_scope or None, timeout=timeout, runner=runner.name)
+        after = _fingerprint(sb, task.workdir, runner=runner)
     finally:
         sb.close()
 
@@ -381,7 +409,9 @@ def grade_patch(
     else:
         changed = sorted(p for p in before.keys() | after.keys() if before.get(p) != after.get(p))
     if changed:
-        tampered.append(f"test or pytest config files changed during the run: {', '.join(changed[:5])}")
+        tampered.append(
+            f"test or {runner.label} config files changed during the run: {', '.join(changed[:5])}"
+        )
     statuses = disguise.restore({t: st for t, st in statuses.items() if t not in canary.ids})
 
     def ok(test: str) -> bool:

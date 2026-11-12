@@ -2,7 +2,7 @@
 
 Stages, each of which can reject:
 
-1. filter      the PR must change Python source and at least one test module
+1. filter      the PR must change source in the repo's language and at least one test module
 2. statement   linked issue text first (SWE-bench style), else a cleaned PR description;
                it must not quote the fix
 3. env         dependencies installed at the BASE commit, cached by a fingerprint of the
@@ -15,6 +15,7 @@ Stages, each of which can reject:
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import subprocess
 import time
@@ -23,7 +24,14 @@ from pathlib import Path
 
 import docker
 from docker.errors import APIError, ImageNotFound
-from gauntlet_repo2env import BuildFailed, PatchFailed, Repo2EnvError, UnsupportedRepo, build_env
+from gauntlet_repo2env import (
+    BuildFailed,
+    PatchFailed,
+    Repo2EnvError,
+    UnsupportedRepo,
+    build_env,
+    check_supported,
+)
 from gauntlet_repo2env.detect import detect, install_script
 from gauntlet_repo2env.repo import (
     GitError,
@@ -32,6 +40,7 @@ from gauntlet_repo2env.repo import (
     clone,
     diff,
     git,
+    is_source_path,
     is_test_module,
     is_test_path,
 )
@@ -44,6 +53,39 @@ from .testing import apply_patch, classify, run_suite, summarize
 
 ENV_REPO = "gauntlet-harness-env"
 DEP_FILES = re.compile(r"^(pyproject\.toml|setup\.py|setup\.cfg|(.*/)?[^/]*requirements[^/]*\.txt)$")
+# Root files only. A nested package.json belongs to a fixture or an example, and a workspace,
+# where it would matter, is refused before this is ever read.
+NODE_DEP_FILES = re.compile(
+    r"^(package\.json|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|\.npmrc|\.nvmrc"
+    r"|\.node-version|\.yarnrc(\.yml)?)$"
+)
+SOURCE_WORDS = {"python": "Python", "node": "JavaScript or TypeScript"}
+
+# The parts of package.json that decide what an install puts on disk. The rest is left out of
+# the env fingerprint on purpose: radashi bumps `version` in nearly every PR, and hashing the
+# whole file built a new 650 MB image for each one, all with identical dependencies.
+PACKAGE_JSON_KEYS = (
+    "dependencies", "devDependencies", "peerDependencies", "optionalDependencies",
+    "bundledDependencies", "bundleDependencies", "overrides", "resolutions", "pnpm",
+    "packageManager", "engines", "workspaces",
+)  # fmt: skip
+INSTALL_SCRIPTS = ("preinstall", "install", "postinstall", "prepare")
+
+
+def package_json_identity(raw: bytes) -> bytes:
+    """What an env build can see of a package.json. Falls back to the raw file if it isn't JSON."""
+    try:
+        pkg = json.loads(raw)
+    except ValueError:
+        return raw
+    if not isinstance(pkg, dict):
+        return raw
+    seen = {k: pkg[k] for k in PACKAGE_JSON_KEYS if k in pkg}
+    scripts = pkg.get("scripts")
+    if isinstance(scripts, dict):
+        seen["scripts"] = {k: scripts[k] for k in INSTALL_SCRIPTS if k in scripts}
+    return json.dumps(seen, sort_keys=True).encode()
+
 
 Log = Callable[[str], None]
 
@@ -125,19 +167,22 @@ def resolve_commits(repo: Repo, pr: PRInfo) -> tuple[str, str]:
 def env_fingerprint(repo: Repo, sha: str, python: str) -> tuple[str, str]:
     """(fingerprint, install script). Same deps at base -> same image, whatever the commit."""
     stack = detect(repo, sha)
-    if stack.language != "python":
-        raise UnsupportedRepo(f"{repo.slug} looks like a {stack.language} project")
+    check_supported(repo.slug, stack)
     script = install_script(stack)
     h = hashlib.sha256()
-    h.update(f"python={python}\n{script}\n".encode())
+    if stack.language == "node":
+        dep_files = NODE_DEP_FILES
+        h.update(f"node={stack.node}\n{script}\n".encode())
+    else:
+        dep_files = DEP_FILES
+        h.update(f"python={python}\n{script}\n".encode())
     for path in sorted(git(repo.path, "ls-tree", "-r", "--name-only", sha).splitlines()):
-        if DEP_FILES.match(path):
+        if dep_files.match(path):
             h.update(f"\n--- {path}\n".encode())
-            h.update(
-                subprocess.run(
-                    ["git", "-C", str(repo.path), "show", f"{sha}:{path}"], capture_output=True
-                ).stdout
-            )
+            raw = subprocess.run(
+                ["git", "-C", str(repo.path), "show", f"{sha}:{path}"], capture_output=True
+            ).stdout
+            h.update(package_json_identity(raw) if path == "package.json" else raw)
     return h.hexdigest(), script
 
 
@@ -160,6 +205,26 @@ def ensure_env(
     image.tag(ENV_REPO, fingerprint[:16])
     client.images.remove(spec.image)  # only drops repo2env's tag, the image keeps ours
     return tag, fingerprint, False
+
+
+def disguise_coverage(repo: Repo, solution: str, targets: list[str]) -> dict[str, int]:
+    """How many of a node task's target tests the grader can rename while it grades.
+
+    A test whose title is built at run time (a `describe.each` block, a variable) can't be
+    renamed, and a cheat that knows what a canary looks like could force such a test and spare
+    the canary. The count is recorded so that a task set can say how exposed it is, and so a
+    task with nothing renamed can be told apart from one that is fully covered.
+    """
+    from gauntlet_repo2env.repo import read_at
+
+    from . import jstests
+
+    renamed = 0
+    for path in sorted({t.split("::", 1)[0] for t in targets}):
+        source = read_at(repo, solution, path)
+        if source is not None:
+            renamed += jstests.coverage(source, path, targets)[0]
+    return {"targets": len(targets), "renamed": renamed}
 
 
 # ---------------------------------------------------------------------- the build
@@ -197,8 +262,12 @@ def build_task(
     tests = [f for f in files if is_test_path(f)]
     source = [f for f in files if not is_test_path(f)]
     test_modules = [f for f in tests if is_test_module(f)]
-    if not any(f.endswith(".py") for f in source):
-        return reject("filter", "no Python source changes", files=files)
+    stack = detect(repo, base)
+    # anything that isn't a language the harness builds is still filtered as Python, so a Go
+    # or Rust repo is turned away with the reason it always was
+    language = stack.language if stack.language in SOURCE_WORDS else "python"
+    if not any(is_source_path(f, language) for f in source):
+        return reject("filter", f"no {SOURCE_WORDS[language]} source changes", files=files)
     if not test_modules:
         return reject("filter", "no test module changes", files=files)
     test_patch = diff(repo, base, solution, tests)
@@ -234,6 +303,8 @@ def build_task(
         test_patch=test_patch,
         test_files=tests,
         test_scope=test_modules if scope == "changed" else [],
+        language=language,
+        runner=stack.runner if language == "node" else "pytest",
     )
     targets = task.test_scope or None
 
@@ -243,7 +314,7 @@ def build_task(
         try:
             if apply_gold:
                 apply_patch(sb, task.workdir, gold_patch, "gold")
-            return run_suite(sb, task.workdir, targets, timeout=test_timeout)
+            return run_suite(sb, task.workdir, targets, timeout=test_timeout, runner=task.runner)
         finally:
             sb.close()
 
@@ -305,5 +376,9 @@ def build_task(
         "rules": "multi-swe-bench",
         "python": python,  # needed to rebuild the env image on another machine
     }
+    if language == "node":
+        task.validation["node"] = stack.node
+        task.validation["package_name"] = stack.package_name  # what a vendored copy would be called
+        task.validation["disguise"] = disguise_coverage(repo, solution, task.targets)
     log(f"{iid} ok: f2p={len(task.f2p)} n2p={len(task.n2p)} s2p={len(task.s2p)} p2p={len(task.p2p)}")
     return task

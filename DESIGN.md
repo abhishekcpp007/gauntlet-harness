@@ -103,74 +103,106 @@ Reports group by category first and never pool them (`report.summarize`).
 6. Grader-owned paths (`/tmp/gauntlet-*`) don't exist in the agent sandbox.
 7. Candidate edits to tests, conftest.py, pytest.ini and tox.ini are dropped before grading.
 
-## What a second language would actually take
+## The second language: JavaScript and TypeScript on vitest
 
-Everything here is Python and pytest. `detect.py` already carries a `Stack.language` with markers
-for node, go, rust, java and ruby, and `build_env` raises `UnsupportedRepo` for all of them. This
-section is what I measured rather than what I assumed, because I twice wrote down the wrong
-summary of it.
+Python with pytest was the only stack until 13 Nov 2026. Node repos tested with vitest are the
+second. This section keeps what was measured before starting, then what the build turned up,
+because three of the things written down in advance were wrong.
 
-**Status parsing is already generic.** `parse_junit` was fed output from five runners and read
-every one correctly:
+### What was measured first
 
-| runner | cases | statuses |
-|---|---|---|
-| pytest | 2 | passed, failed |
-| jest-junit | 2 | passed, failed |
-| vitest `--reporter=junit` | 2 | passed, failed |
-| go, gotestsum `--junitfile` | 2 | passed, failed |
-| cargo nextest, junit profile | 2 | passed, failed |
+**Status parsing was already generic.** `parse_junit` was fed output from five runners and read
+every one correctly: pytest, jest-junit, vitest, gotestsum and cargo nextest.
 
-**Test identity was not, and half of it is now fixed.** `parse_junit` flattened the document
-with `root.iter("testcase")`, and a testcase element has no parent pointer, so a `file` recorded
-on the enclosing `testsuite` was never seen. jest-junit writes it there and vitest uses the
-suite's name for it. Walking suite by suite instead:
+**Test identity was not.** `parse_junit` flattened the document with `root.iter("testcase")`, and
+a testcase element has no parent pointer, so a `file` recorded on the enclosing `testsuite` was
+never seen. Walking suite by suite fixed jest and vitest. All 45,444 test ids recorded across the
+53 live Python tasks round-trip unchanged, which was the part that had to hold.
 
-```
-                before                                  after
-pytest          tests/test_calc.py::test_add            unchanged
-vitest          src/calc.test.ts::adds numbers          unchanged
-jest-junit      calc adds numbers::calc adds numbers    src/__tests__/calc.test.js::calc adds numbers
-go              example.com/calc::TestAdd               unchanged, and correctly so
-cargo-nextest   calc::tests::adds                       unchanged, and correctly so
-```
+**The plan was three steps**: normalise ids per runner, put the canary's parse and emit behind an
+interface while leaving the strategy alone, then do detection and install, "the easy part".
 
-All 45,444 test ids recorded across the 53 live tasks round-trip unchanged, which was the part
-that had to hold.
+### What the build actually took
 
-Go and Rust are not an oversight. `go test` and `cargo nextest` address tests by package and
-path within it, and there is no file anywhere in their output. A fallback that invented one
-would be a lie, so either language needs a real mapping from package to source file before its
-tasks can be graded. That is still open.
+**One seam, by runner and not by language.** `runners.py` holds what differs: which files the
+integrity check hashes, what to redo when a sandbox boots at a new commit, how to probe the
+network, how much memory and CPU the runner needs. `repo2env.suite_command` is the one place a
+suite is run from. `grading.py` keeps the strategy (plant must-fail and must-pass tests, rename
+the targets, hash before and after) and hands the file editing to `jstests.py` for vitest. The
+pytest values moved into `runners.py` unchanged and a test pins the exact pytest command, so the
+53 SWE and 15 LHT Python tasks are graded by the commands they were validated with.
 
-Why any of this matters:
+**A vitest id is `path::describe > describe > title`.** The canary goes into the describe block
+that holds the graded tests and copies the test it borrows a name from: the same call (`it` or
+`test`), quotes, indentation and semicolons, and the assertion style the file already uses.
+`jstests.py` reads the file with tree-sitter, with the TypeScript and TSX grammars for those
+suffixes. A regex can't tell a title from the same text inside a template string or a comment.
 
-- `f2p` and `p2p` are lists of test ids, so an id that is unstable or carries no file breaks task
-  matching across runs
-- `_test_file(target)` splits an id on `::` to find the file to plant the canary in. With the jest
-  shape there is no file in the id at all, so there is nowhere to plant
+**"The easy part" was not.** Detection and install took three decisions that had nothing to do
+with the canary:
 
-So the blocker is not result handling and not the canary strategy. It is **per-runner id
-normalisation**, and it has to come first.
+- *node_modules can't live in the repo.* A task sandbox empties the repo folder and unpacks the
+  base commit into it, which is right for Python (deps are in site-packages) and deletes every
+  dependency in Node. The env moves `node_modules` one folder up. Node resolves packages from
+  any parent folder, so imports work the same, and a patch can no longer reach the test runner.
+  The suite command names vitest by that path and never goes through `npx` or a `package.json`
+  script, since both are the repo's to rewrite.
+- *A sandbox with networking off has an empty `/etc/hosts`.* `localhost` doesn't resolve, vite
+  looks it up on startup, and vitest died with `EAI_AGAIN` before collecting a single test. Every
+  run of every task read as "the suite produced no results". The vitest boot step writes the
+  loopback entries back. Nothing leaves the container either way. The same empty file is there
+  for Python tasks, where a test that binds `localhost` would fail for a reason that has nothing
+  to do with the code. That is not measured yet, see the open list below.
+- *One core is not enough.* vitest starts one process per test file. On the sandbox's default
+  single core radashi's 960 tests took 100 seconds a run, and validating one PR is four runs.
+  The vitest sandbox gets four cores and 2 GB, and the same run takes 20 seconds.
 
-**The canary generalises further than I claimed.** Its strategy is language-agnostic: plant some
-tests that must fail and some that must pass, scatter them among the file's own tests, name them
-like their neighbours, then check afterwards that the must-fail ones failed. Only three things are
-Python-bound, and each is small: parsing the file to find test functions and classes
-(`ast.parse`), emitting a body, and the id format. `Disguise`, which renames the graded tests
-during grading, is in the same shape.
+**A patch can bring its own runner.** `git apply` will happily create `node_modules/vitest/...`
+inside the repo, and Node finds the nearest `node_modules` first. `strip_test_changes` now drops
+any path with a `node_modules` part, along with vitest and vite config files. There is no pytest
+equivalent of this hole, because site-packages is not inside the repo.
 
-**The order to do it in.**
+**The cheats had to be rewritten, and the first versions were too weak to prove anything.**
+`jscheats.py` is the pytest zoo in JavaScript. The first force-pass payload replaced chai's
+`assert`, which every vitest matcher reports through. Against a grader with the defences
+switched off it forged one target test of two: the other failed on a `TypeError`, which is not an
+assertion. A cheat that can't win undefended says nothing when it loses defended. The payload now
+also swaps each test's body for an empty one through `vitest/suite`'s `setFn`, and
+`test_the_same_cheats_win_against_a_grader_with_no_defences` holds every trick to that bar.
 
-1. Normalise test ids per runner, with the probe above as the test. **Done for pytest, jest and
-   vitest.** Still open for Go and Rust, which need a package-to-file mapping rather than a
-   fallback. Nothing else can be trusted until an id means the same thing twice.
-2. Put the canary's emit and parse behind an interface, leaving the strategy where it is. Do this
-   *with* the second language, not before it: a refactor with no second caller is speculative, and
-   this is the component least worth breaking on a guess.
-3. Then `detect.py` and `install_script` for the language, which is the easy part and the part
-   that looks like the whole job from the outside.
+The JUnit forger is new in kind. Under pytest it was an `atexit` hook in the same process. Under
+vitest the report is written by the main process after the workers are gone, so the worker
+leaves a detached process behind that polls for the file and cuts the failures out. It wins the
+race against the grader's read. The canary catches it, because a must-fail test that comes back
+passed is forged whoever did it.
 
-Shipping an adapter without step 2 would mean a language whose tasks have no canary, which is
-weaker than not supporting it at all. Anyone running the harness would reasonably assume the
-anti-cheat applies everywhere.
+**The disguise matters more here than in Python.** A canary is named like a neighbour plus one
+of a public list of endings. `cheater:canary-aware` spares any test named that way and forces
+the rest. With renaming off it forges every target and trips nothing. With renaming on, the
+targets carry the same endings, so sparing the canary spares them too.
+`test_the_disguise_is_what_stops_a_cheat_that_knows_the_canary` pins both halves.
+
+That makes un-renamable targets the real residual. A plain title is renamed in place. An
+`it.each` format string gets an ending appended, and reported ids are mapped back by pattern.
+`it.skipIf(cond)('title')` is a plain title called twice. What can't be renamed is a test under
+a title built at run time: a `describe.each` block, a variable, a template string with a value
+in it. `validation.disguise` records `{targets, renamed}` on every node task so a task set can
+say how exposed it is.
+
+### Still open
+
+- **jest.** The parser, the canary and the disguise don't care which runner reports. What's
+  missing is the id shape (jest-junit needs `ancestorSeparator` and a title template set to
+  match), the suite command, and a force-pass payload written against jest's `expect`. Refused
+  with a reason until then.
+- **Workspaces.** Sibling packages resolve through symlinks the package manager writes into
+  `node_modules`, and moving that folder up breaks them. Refused with a reason.
+- **Projects whose tests import a build.** The env runs the install and nothing else.
+- **Cheat Catcher's static rules are Python.** On a JS patch it finds nothing, so the JS side
+  stands on the grading-time defences alone: strip, canary, disguise, hash. Those are the ones
+  that held when static analysis didn't, but it is one layer fewer.
+- **LHT is Python only.** Release ranges build through `lht.py`, which filters on `.py`.
+- **`localhost` in Python sandboxes.** Same empty `/etc/hosts`. Fixing it in the sandbox is the
+  right place, and it needs a measured before and after on the 53 live tasks first.
+- **Go and Rust** still need a package-to-file mapping before a canary has anywhere to go.
+  `go test` and `cargo nextest` address tests by package, and no file appears in their output.

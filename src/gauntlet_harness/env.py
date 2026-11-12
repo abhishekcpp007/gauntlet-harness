@@ -39,6 +39,7 @@ from .grading import grade_patch
 from .profiles import profile_for
 from .reward import RewardConfig, compute_reward
 from .rubric import default_rubric, score_rubric
+from .runners import runner_for
 from .sandboxing import boot
 from .schema import EpisodeResult, GradeResult, HarnessTask
 
@@ -52,9 +53,16 @@ merged. Make the change the task describes.
 {statement}
 </task>
 
-The project and pytest are installed. There's no network. Hidden tests will grade your work \
+{toolchain} There's no network. Hidden tests will grade your work \
 after you submit, and a separate checker flags edits to tests or the test runner, so fix the \
 real behavior."""
+
+# What an agent is told about the toolchain. The pytest line is the sentence every Python
+# episode so far was run with, so it stays word for word.
+TOOLCHAIN = {
+    "pytest": "The project and pytest are installed.",
+    "vitest": "The project's dependencies and vitest are installed, run the tests with `npx vitest run`.",
+}
 
 LHT_INSTRUCTIONS = """\
 You're working in a checkout of {repo} at {workdir}, at release {from_ref}. Your job is to bring \
@@ -138,6 +146,7 @@ class SWEEnv:
                 repo=self.task.pr.repo,
                 workdir=self.task.workdir,
                 statement=self.task.problem_statement.strip(),
+                toolchain=TOOLCHAIN[runner_for(self.task).name],
             )
         info = {
             "instance_id": self.task.instance_id,

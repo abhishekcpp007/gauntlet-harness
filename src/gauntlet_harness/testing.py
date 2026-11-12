@@ -19,7 +19,7 @@ from __future__ import annotations
 import shlex
 import xml.etree.ElementTree as ET
 
-from gauntlet_repo2env import PatchFailed, parse_junit
+from gauntlet_repo2env import PatchFailed, parse_junit, suite_command
 from gauntlet_sandbox import Sandbox
 from pydantic import BaseModel, Field
 
@@ -43,13 +43,13 @@ def _test_file(target: str) -> str:
 
 
 def run_suite(
-    sb: Sandbox, workdir: str, scope: list[str] | None, *, timeout: float = 900
+    sb: Sandbox, workdir: str, scope: list[str] | None, *, timeout: float = 900, runner: str = "pytest"
 ) -> dict[str, Status]:
-    """Run pytest (whole suite, or just `scope`) and return each test's status.
+    """Run the suite (all of it, or just `scope`) and return each test's status.
 
     Scope entries whose file doesn't exist yet are dropped, so a test module that only the
     test patch adds simply reports nothing in the base run instead of failing the command.
-    An empty dict means pytest produced no report at all.
+    An empty dict means the runner produced no report at all.
     """
     targets: list[str] = []
     if scope:
@@ -60,11 +60,7 @@ def run_suite(
         if not targets:
             return {}
 
-    cmd = (
-        f"rm -f {JUNIT_PATH}; python -m pytest -p no:cacheprovider -q -o junit_family=xunit1 "
-        f"--continue-on-collection-errors --junitxml={JUNIT_PATH} "
-        + " ".join(shlex.quote(t) for t in targets)
-    )
+    cmd = suite_command(runner, JUNIT_PATH, targets, keep_going=True)
     sb.exec(cmd, workdir=workdir, timeout=timeout)
     try:
         xml_text = sb.read_text(JUNIT_PATH)
@@ -74,7 +70,7 @@ def run_suite(
         sb.exec(f"rm -f {JUNIT_PATH}")
     try:
         parsed = parse_junit(xml_text)
-    except ET.ParseError:  # pytest was killed mid-write (timeout, OOM): same as no report
+    except ET.ParseError:  # the runner was killed mid-write (timeout, OOM): same as no report
         return {}
     return {test_id: _STATUS[status] for test_id, status in parsed.items()}
 

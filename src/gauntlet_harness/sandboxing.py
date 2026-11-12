@@ -13,22 +13,15 @@ from docker.errors import ImageNotFound
 from gauntlet_repo2env.repo import Repo, archive, clone, default_cache, slug_for
 from gauntlet_sandbox import Sandbox, SandboxConfig
 
+from .runners import PYTEST, runner_for
 from .schema import HarnessTask
 from .testing import apply_patch
 
 SCRATCH_GIT = "git -c user.name=workspace -c user.email=workspace@localhost"
 
-# The env image may have been built at a different commit with the same dependencies, and
-# the workdir gets replaced, so anything the build generated (setuptools-scm / hatch-vcs
-# _version.py files, editable install metadata) has to be regenerated for THIS commit.
-# Offline and dependency-free: the env already has every dependency and the build backend.
-REINSTALL = (
-    "if [ -f pyproject.toml ] || [ -f setup.py ]; then "
-    'SETUPTOOLS_SCM_PRETEND_VERSION="${SETUPTOOLS_SCM_PRETEND_VERSION:-0.0.0}" '
-    "python -m pip install -q --disable-pip-version-check --no-cache-dir --no-index --no-deps "
-    "--no-build-isolation -e . >/tmp/.reinstall.log 2>&1 || echo REINSTALL_FAILED; "
-    "rm -f /tmp/.reinstall.log; fi"
-)
+# What has to be redone when a sandbox boots at a new commit is the runner's to say, see
+# runners.py. This name is kept for anything that imported the pytest one.
+REINSTALL = PYTEST.reinstall
 
 
 @contextlib.contextmanager
@@ -115,11 +108,15 @@ def boot(
     """
     repo = cached_clone(task.repo, cache_dir)
     ensure_image(task, cache_dir)
+    runner = runner_for(task)
     cfg = SandboxConfig(
         image=task.image,
         workdir=task.workdir,
         default_timeout=timeout,
         max_output_bytes=200_000,
+        memory=runner.memory,
+        pids_limit=runner.pids_limit,
+        cpus=runner.cpus,
     )
     sb = Sandbox(
         cfg,
@@ -131,7 +128,7 @@ def boot(
     try:
         sb.exec(f"find {wd} -mindepth 1 -delete")
         sb.put_archive(task.workdir, archive(repo, task.base_commit))
-        res = sb.exec(REINSTALL, workdir=task.workdir, timeout=max(timeout, 300))
+        res = sb.exec(runner.reinstall, workdir=task.workdir, timeout=max(timeout, 300))
         sb.metadata["reinstall_ok"] = "REINSTALL_FAILED" not in res.stdout
         if apply_tests:
             apply_patch(sb, task.workdir, task.test_patch, "test")

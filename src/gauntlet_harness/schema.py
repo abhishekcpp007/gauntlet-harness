@@ -96,6 +96,8 @@ class Horizon(BaseModel):
 class HarnessTask(BaseModel):
     format: str = "gauntlet.harness.task/v1"
     category: Category = "swe"  # swe: one PR. lht: a release range, see lht.py
+    language: str = "python"  # python or node
+    runner: str = "pytest"  # the test runner the task was validated with, see runners.py
     instance_id: str  # owner__name-<pr number>, or owner__name-<from>_to_<to> for lht
     repo: str  # clone URL
     pr: PRInfo
@@ -109,7 +111,7 @@ class HarnessTask(BaseModel):
     gold_patch: str
     test_patch: str
     test_files: list[str]
-    test_scope: list[str] = Field(default_factory=list)  # pytest targets, empty means the full suite
+    test_scope: list[str] = Field(default_factory=list)  # test runner targets, empty means the full suite
     f2p: list[str] = Field(default_factory=list)
     n2p: list[str] = Field(default_factory=list)
     s2p: list[str] = Field(default_factory=list)
