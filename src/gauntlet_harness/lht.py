@@ -35,6 +35,7 @@ point of validating rather than assuming.
 
 from __future__ import annotations
 
+import ast
 import re
 import subprocess
 import time
@@ -51,6 +52,7 @@ from gauntlet_repo2env.repo import (
     git,
     is_test_module,
     is_test_path,
+    read_at,
 )
 from gauntlet_sandbox import SandboxError
 
@@ -58,7 +60,7 @@ from .build import Log, ensure_env, sanitize
 from .github import MERGE_SUBJECT_RE, SQUASH_SUBJECT_RE, parse_time
 from .leakcheck import statement_leaks
 from .sandboxing import boot
-from .schema import HarnessTask, Horizon, Milestone, PRInfo, Rejected
+from .schema import HarnessTask, Horizon, Milestone, PRInfo, Rejected, Status
 from .testing import apply_patch, classify, run_suite, summarize
 
 # A tag that looks like a release: v1.2.3, 1.2, 2024.10.1, release-1.0. Pre-releases are
@@ -295,6 +297,53 @@ def range_statement(slug: str, from_ref: str, to_ref: str, prs: list[PRInfo], di
     return "\n\n".join(parts)
 
 
+def _test_bodies(source: str | None) -> dict[tuple[str | None, str], str]:
+    """(class or None, test name) -> its AST, formatting and line numbers left out."""
+    try:
+        tree = ast.parse(source or "")
+    except SyntaxError:
+        return {}
+    out: dict[tuple[str | None, str], str] = {}
+    funcs = (ast.FunctionDef, ast.AsyncFunctionDef)
+    for node in tree.body:
+        if isinstance(node, funcs):
+            out[(None, node.name)] = ast.dump(node)
+        elif isinstance(node, ast.ClassDef):
+            for sub in node.body:
+                if isinstance(sub, funcs):
+                    out[(node.name, sub.name)] = ast.dump(sub)
+    return out
+
+
+def unmask(n2p: list[str], run: dict, read_before, read_after) -> tuple[list[str], list[str]]:
+    """(real n2p, tests that were only hidden by a collection crash).
+
+    When a release's test changes break collection (a conftest that imports something new, a
+    helper module the old source lacks) the whole module reports nothing in the `test` run, so
+    every test in it reads NONE -> PASSED. On boltons 26.1.0 -> 26.2.0 that made 388 targets out
+    of what was mostly 314 tests passing at the base, and one import fix would have earned most
+    of the release. A test that passed at the base and whose body is byte for byte the same AST
+    at both releases isn't new behaviour. It's a regression guard that couldn't be collected,
+    so it goes to P2P, where breaking it still costs the agent.
+    """
+    cache: dict[str, tuple[dict, dict]] = {}
+    kept, masked = [], []
+    for test in n2p:
+        if run.get(test) != Status.PASSED:
+            kept.append(test)
+            continue
+        path, *rest = test.split("[")[0].split("::")
+        key = (rest[0], rest[1]) if len(rest) == 2 else (None, rest[0] if rest else "")
+        if path not in cache:
+            cache[path] = (_test_bodies(read_before(path)), _test_bodies(read_after(path)))
+        before, after = cache[path]
+        if key in before and before.get(key) == after.get(key):
+            masked.append(test)
+        else:
+            kept.append(test)
+    return kept, masked
+
+
 def _gold_lines(patch: str) -> int:
     return sum(1 for line in patch.splitlines() if line[:1] in "+-" and not line.startswith(("+++", "---")))
 
@@ -444,6 +493,10 @@ def build_range_task(
         )
     if not fixes[0]:
         return reject("transitions", "the fix run produced no test results", runs=runs_summary)
+    trans.n2p, masked = unmask(
+        trans.n2p, run, lambda p: read_at(repo, base, p), lambda p: read_at(repo, solution, p)
+    )
+    trans.p2p = sorted([*trans.p2p, *masked])
     if not trans.targets:
         return reject(
             "transitions", "no test goes from failing, skipped or missing to passing", runs=runs_summary
@@ -485,6 +538,7 @@ def build_range_task(
         "scope": "changed",
         "rules": "multi-swe-bench, regressions dropped up to a cap",
         "python": python,
+        "masked_p2p": len(masked),
         "attributed": sum(len(m.tests) for m in milestones if m.id != "unattributed"),
     }
     log(

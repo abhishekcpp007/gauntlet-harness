@@ -77,6 +77,13 @@ to `unattributed`. `grading.milestone_rates` fills `GradeResult.milestones` only
 run; a tampered run scores 0 on every milestone. `RewardConfig.milestone_credit` swaps the
 partial-credit term from target rate to mean milestone rate.
 
+Collection-masked tests (`lht.unmask`): a test that PASSED in the `run` stage, read NONE in
+`test` because the release's test changes broke collection, and has the same AST at both
+releases is a P2P guard, not a target. Without this boltons 26.1.0 -> 26.2.0 had 388 targets
+that one import fix would mostly earn. Counted in `validation["masked_p2p"]`.
+
+Direct commits are milestones too (`commit-<sha12>`), via `lht.units_in_order`.
+
 Ranges (`lht.release_ranges`): release tags sorted by date then version number, each paired
 with the newest earlier release that is its git ancestor. A maintenance tag on a side branch
 pairs with its own line and never starts a main-line range.

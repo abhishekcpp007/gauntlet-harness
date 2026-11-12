@@ -20,6 +20,7 @@ from gauntlet_harness.lht import (
     release_ranges,
     release_tags,
     units_in_order,
+    unmask,
 )
 from gauntlet_harness.profiles import LHT, SWE, profile_for
 from gauntlet_harness.report import render_html, render_markdown, summarize
@@ -131,6 +132,31 @@ def test_statement_numbers_the_changes_and_keeps_items_short():
     assert "github.com/a/b/pull" not in text  # sanitized like an SWE statement
     assert "neg is missing" in text and "word word" not in text  # issue text beats the PR body
     assert "- Tidy the module" in text
+
+
+def test_tests_hidden_by_a_collection_crash_go_back_to_p2p():
+    before = (
+        "def test_same():\n    assert 1\n\n\n"
+        "def test_body_changed():\n    assert 1\n\n\n"
+        "class TestK:\n    def test_m(self):\n        assert 2\n"
+    )
+    after = (
+        "import new_helper  # the import that broke collection\n\n\n"
+        "def test_same():\n    assert   1  # formatting doesn't count\n\n\n"
+        "def test_body_changed():\n    assert 2\n\n\n"
+        "class TestK:\n    def test_m(self):\n        assert 2\n\n\n"
+        "def test_brand_new():\n    assert 3\n"
+    )
+    files = {"before": {"t.py": before}, "after": {"t.py": after}}
+    run = {
+        "t.py::test_same": "PASSED",
+        "t.py::test_body_changed": "PASSED",
+        "t.py::TestK::test_m": "PASSED",
+    }
+    n2p = [*run, "t.py::test_brand_new", "gone.py::test_x"]
+    kept, masked = unmask(n2p, run, files["before"].get, files["after"].get)
+    assert masked == ["t.py::test_same", "t.py::TestK::test_m"]
+    assert kept == ["t.py::test_body_changed", "t.py::test_brand_new", "gone.py::test_x"]
 
 
 def _lht_task(milestones: list[Milestone], p2p: list[str] = ()) -> HarnessTask:
@@ -332,7 +358,7 @@ def test_gold_resolves_and_half_a_release_earns_half(built):
 def test_shipped_lht_dataset_is_whole():
     path = Path(__file__).parent.parent / "datasets" / "gauntlet-lht-2026-11" / "tasks.jsonl"
     tasks = [HarnessTask.model_validate_json(line) for line in path.read_text().splitlines() if line.strip()]
-    assert len(tasks) == 3
+    assert len(tasks) == 15
     for task in tasks:
         assert task.category == "lht" and task.horizon is not None
         owned = sorted(t for m in task.horizon.milestones for t in m.tests)
