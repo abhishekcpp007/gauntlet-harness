@@ -20,6 +20,43 @@ gauntlet report  --results runs/results.jsonl --cutoff 2026-06-01 --html report.
 gauntlet export  --format dpo --results runs/results.jsonl -o dpo.jsonl
 ```
 
+## Two kinds of task: SWE and LHT
+
+The harness makes two categories of task, and it keeps them apart on purpose.
+
+| | SWE | LHT (long horizon) |
+|---|---|---|
+| One task is | one merged PR | a release range, `v1.2.0` to `v1.3.0` |
+| Agent starts at | the PR's base commit | the older release |
+| Hidden tests | the PR's | every test the release changed |
+| Step budget | 60 | 400 |
+| Test term in the reward | resolved, else target pass rate | mean pass rate over **milestones** |
+| Similarity to gold | 15% of the reward | off |
+| Regressions at validation | one is enough to reject | dropped from grading up to a cap, and recorded |
+| Leaderboard | its own | its own |
+
+**Why milestones.** A release with 30 PRs and 400 target tests is almost never fully solved, so a pass/fail reward gives an RL run nothing to climb. Each target test is attributed to the PR that introduced it, first by the test's name in that PR's diff, then by the file if only one PR touched it. What's left goes to an `unattributed` bucket so it still counts once. The reward averages over milestones, not tests, so one PR with 300 parametrized cases can't drown out ten small ones.
+
+**Why similarity is off.** `SequenceMatcher` over a 5,000 line diff is noise, and paying for it teaches a model to copy the shape of a patch rather than its behaviour.
+
+**Why the reports never mix them.** A resolved rate over one-PR tasks and one over release ranges measure different things. A results file with both gets one table per category, and LHT's table shows milestone progress instead of per-kind rates.
+
+```bash
+gauntlet ranges    --repo tkem/cachetools --last 5                # what release ranges exist
+gauntlet build-lht --repo tkem/cachetools --range v7.2.5..v7.2.6 -o lht.jsonl
+gauntlet run       --tasks lht.jsonl --category lht --policies oracle,noop,cheater
+```
+
+**First run on real ranges, 12 Nov 2026.** I pointed it at 8 ranges across 4 repos. 3 became tasks: prettytable `3.15.1..3.16.0` and two cachetools ranges. One of those, cachetools `v7.2.5..v7.2.6`, has no PRs at all, since that maintainer pushes straight to master. Direct commits count as milestones for exactly this reason. Calibrate on the three gave 33 episodes and 0 violations: the oracle resolved 3 of 3 (reward 0.97 to 1.0), noop got -1, and none of the 11 cheats earned above 0 or finished a single milestone.
+
+The 5 rejections were the useful part:
+
+- tomli `2.4.1..2.5.0` failed the leak check, and rightly so. `flit_core`, tomli's own build backend, vendors a copy of the *newer* tomli into site-packages, so the agent could have read the answer. A single-PR task rarely hits this. A release range hits it whenever the target release ships somewhere else first.
+- tomli `2.3.0..2.4.0` failed validation because the gold fix doesn't pass in an env built at the older release. That's the dependency drift case, caught by measuring instead of assuming.
+- Both tablib ranges and tomli `2.2.1..2.3.0` gave no task for reasons that aren't LHT's. tablib's `pytest.ini` adds `--cov` and the env lacks `pytest-cov`, which also explains why tablib has no SWE tasks in the live set. That one's still open.
+
+Everything else is shared: the sandbox, the canary, the test-renaming disguise, Cheat Catcher, and the leak checks. An LHT task is graded by the same `grade_patch`, so the anti-cheat work above applies to it unchanged. The design notes are in [`DESIGN.md`](DESIGN.md#two-task-categories).
+
 ## Gauntlet Live, November 2026
 
 A ready-made task set built with this harness lives in [`datasets/gauntlet-live-2026-11`](datasets/gauntlet-live-2026-11). Every task is a real PR merged between 7 September and 30 October 2026.
