@@ -2,6 +2,7 @@
 what gets renamed, and that both read like the file they were put in."""
 
 import random
+import re
 
 import pytest
 
@@ -271,7 +272,8 @@ def test_a_generated_test_is_never_a_name_to_borrow_or_a_place_to_plant():
             )
         ]
         assert loop.count("it(") == 1
-        assert all("correctly nests" not in t and "${" not in t for t in (*fail_ids, *pass_ids))
+        # it may borrow the words a generated title starts with, never the part filled in per row
+        assert all("${" not in t and "JSON" not in t for t in (*fail_ids, *pass_ids))
 
 
 def test_coverage_counts_what_the_disguise_cannot_reach():
@@ -360,3 +362,96 @@ def test_a_file_of_only_generated_tests_still_takes_canaries():
     source, ids = GENERATED["a describe named at run time"]
     out, fail_ids, pass_ids = jstests.plant_canaries(source, "a.test.js", ids, random.Random(0), 2)
     assert _parses(out, "a.test.js") and len({*fail_ids, *pass_ids}) == 4
+
+
+LOOPED_ONLY = """\
+import { describe, it, expect } from 'vitest';
+import i18next from '../../src/i18next.js';
+
+describe('nesting', () => {
+  const tests = [{ args: ['a'] }, { args: ['b'] }];
+
+  tests.forEach((test) => {
+    it(`correctly nests for ${JSON.stringify(test.args)} args`, () => {
+      expect(i18next.t(...test.args)).toBeTruthy();
+    });
+  });
+});
+"""
+
+
+@pytest.mark.parametrize("seed", range(15))
+def test_a_canary_only_calls_what_the_file_imported(seed):
+    """i18next #2454: the file imports `it`, every test is made in a loop, and the first
+    canaries were written as `test(...)` at the top of the file. That is a ReferenceError,
+    the file never loaded, and the honest oracle was flagged for tampering."""
+    ids = [
+        'a.test.js::nesting > correctly nests for ["a"] args',
+        'a.test.js::nesting > correctly nests for ["b"] args',
+    ]
+    out, fail_ids, pass_ids = jstests.plant_canaries(LOOPED_ONLY, "a.test.js", ids, random.Random(seed), 2)
+    planted = [line for line in out.splitlines() if line not in LOOPED_ONLY.splitlines() and line.strip()]
+    assert not any(line.lstrip().startswith("test(") for line in planted)
+    heads = [line for line in planted if line.lstrip().startswith("it(")]
+    assert len(heads) == 4
+    # in the block the graded tests are in, named after them, written the way they are
+    assert all(
+        line.startswith("  it(`correctly nests for ") and line.endswith("`, () => {") for line in heads
+    )
+    assert all(t.startswith("a.test.js::nesting > correctly nests for ") for t in (*fail_ids, *pass_ids))
+    assert all(line.endswith((";", "{")) for line in planted)
+    assert _parses(out, "a.test.js")
+
+
+def test_with_no_vitest_import_the_globals_are_on_and_the_file_decides():
+    head = "describe('calc', () => {\n"
+    source = head + "  test.each([1, 2])('adds %i', (n) => {\n    expect(n).toBeTruthy()\n  })\n})\n"
+    out, *_ = jstests.plant_canaries(source, "a.test.js", ["a.test.js::calc > adds 1"], random.Random(0), 2)
+    # one word is too little to borrow, so the name is the canary's own. The call is the file's.
+    assert out.count("  test('handles ") == 4 and "it(" not in out
+
+
+SNAP = """\
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`Events > CDATA 1`] = `
+[
+  {
+    "event": "oncdatastart",
+  },
+]
+`;
+
+exports[`Events > CDATA 2`] = `"second"`;
+
+exports[`Events > CDATA > as a hint 1`] = `"hinted"`;
+
+exports[`Events > CDATA (inside special) 1`] = `"a different test"`;
+
+exports[`Events > row a parses 1`] = `"a"`;
+
+exports[`Events > a \\`quoted\\` name 1`] = `"q"`;
+"""
+
+
+def test_snapshot_keys_follow_a_rename():
+    """htmlparser2 #2540: the gold fix failed its own targets because their snapshots were
+    still filed under the names the disguise had just changed."""
+    path = "src/Parser.events.spec.ts"
+    back = {f"{path}::Events > CDATA twice": f"{path}::Events > CDATA"}
+    rules = [
+        (re.escape(f"{path}::Events > row ") + ".*?" + re.escape(" parses") + re.escape(" again"), " again")
+    ]
+    out = jstests.rename_snapshot_keys(SNAP, path, back, rules)
+    assert "exports[`Events > CDATA twice 1`] = `\n[" in out
+    assert "exports[`Events > CDATA twice 2`] = " in out
+    assert "exports[`Events > CDATA twice > as a hint 1`] = " in out
+    assert "exports[`Events > row a parses again 1`] = " in out
+    # a test that only starts with the same words is someone else's
+    assert "exports[`Events > CDATA (inside special) 1`] = " in out
+    assert "exports[`Events > a \\`quoted\\` name 1`] = " in out
+    assert "exports[`Events > CDATA 1`]" not in out
+    # the snapshots themselves are untouched
+    assert out.count('"event": "oncdatastart"') == 1 and out.count("`;") == SNAP.count("`;")
+    assert jstests.rename_snapshot_keys(SNAP, path, {}, []) == SNAP
+    assert jstests.snapshot_path(path) == "src/__snapshots__/Parser.events.spec.ts.snap"

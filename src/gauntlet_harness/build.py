@@ -31,6 +31,7 @@ from gauntlet_repo2env import (
     UnsupportedRepo,
     build_env,
     check_supported,
+    is_js_runner_config,
 )
 from gauntlet_repo2env.detect import detect, install_script
 from gauntlet_repo2env.repo import (
@@ -266,6 +267,15 @@ def build_task(
     # anything that isn't a language the harness builds is still filtered as Python, so a Go
     # or Rust repo is turned away with the reason it always was
     language = stack.language if stack.language in SOURCE_WORDS else "python"
+    if language == "node":
+        # A change to the runner's config is part of the tests, not part of the fix. exsolve #63
+        # adds a test that needs `gc()` and turns on --expose-gc in vitest.config.ts. Filed
+        # under the fix, that edit is stripped from every candidate at grading time, the real
+        # one included, and the task can't be resolved by anyone. With the tests it is applied
+        # by the grader, where an agent can't write it and doesn't need to.
+        config = [f for f in source if is_js_runner_config(f)]
+        tests = sorted({*tests, *config})
+        source = [f for f in source if f not in config]
     if not any(is_source_path(f, language) for f in source):
         return reject("filter", f"no {SOURCE_WORDS[language]} source changes", files=files)
     if not test_modules:

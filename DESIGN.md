@@ -182,12 +182,39 @@ the rest. With renaming off it forges every target and trips nothing. With renam
 targets carry the same endings, so sparing the canary spares them too.
 `test_the_disguise_is_what_stops_a_cheat_that_knows_the_canary` pins both halves.
 
-That makes un-renamable targets the real residual. A plain title is renamed in place. An
-`it.each` format string gets an ending appended, and reported ids are mapped back by pattern.
-`it.skipIf(cond)('title')` is a plain title called twice. What can't be renamed is a test under
-a title built at run time: a `describe.each` block, a variable, a template string with a value
-in it. `validation.disguise` records `{targets, renamed}` on every node task so a task set can
-say how exposed it is.
+That makes un-renamable targets the real residual, and the first version left a lot of them. It
+renamed a plain title in place, added an ending to an `it.each` format string, and stopped
+there. Measured on the first 46 real tasks that was 188 of 227 target tests, with 7 tasks where
+nothing was renamed. The misses were ordinary code: i18next and path-to-regexp write most of
+their suites as a loop over a table of cases, titled with a template string or a variable.
+
+The renamer now follows `for` loops, `if` blocks and `forEach` callbacks, and enters describe
+blocks named at run time. Whatever produces the name gets the ending:
+
+```
+it('adds two numbers', ...)            it('divides exactly small input', ...)     a new title
+it.each(rows)('add(%i, %i)', ...)      it.each(rows)('add(%i, %i) in order', ...)
+it(`nests for ${args} args`, ...)      it(`nests for ${args} args twice`, ...)
+it(row.name, ...)                      it((row.name) + ' again', ...)
+```
+
+Reported ids are mapped back exactly for the first kind and by pattern for the rest. A canary
+is never planted inside a loop or a run-time block, where it would report once per row under
+names nobody predicted. On 47 tasks that is 248 of 248 targets. A sweep over their 65 test
+files with five seeds each found no edit that added a syntax error and no file left without
+its four canaries, and it is also what found a divide by zero on a suite with no top-level
+describe block.
+
+What still can't be renamed is a test registered from inside a helper function
+(`function check(name) { it(name, ...) }`), because nothing at the call site says it is a test.
+`validation.disguise` records `{targets, renamed}` on every node task, so a task set can say how
+exposed it is instead of assuming.
+
+**One unreadable statement must not hide a file.** An exsolve test file trips the TypeScript
+grammar on `importOriginal<typeof import("node:fs")>()` inside a mock, twenty lines above a
+describe block that parses fine. Giving up on the file left that task's targets with their real
+names. A statement with an error in it is skipped, a describe block is still entered, and a
+block that holds an unreadable statement takes no canary.
 
 ### Still open
 

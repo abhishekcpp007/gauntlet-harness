@@ -298,6 +298,19 @@ class Disguise:
             renamed = self.rename(current, path)
             if renamed != current:
                 sb.write_file(full, renamed)
+                if self.runner == "vitest":
+                    self._rename_snapshots(sb, workdir, path)
+
+    def _rename_snapshots(self, sb, workdir: str, path: str) -> None:
+        """Snapshots are stored under the test's name, so they have to follow a rename."""
+        snap = posixpath.join(workdir, jstests.snapshot_path(path))
+        try:
+            current = sb.read_text(snap)
+        except (FileNotFoundError, UnicodeDecodeError):
+            return
+        renamed = jstests.rename_snapshot_keys(current, path, self.back, self.rules)
+        if renamed != current:
+            sb.write_file(snap, renamed)
 
     def restore(self, statuses: dict) -> dict:
         if self.runner == "vitest":

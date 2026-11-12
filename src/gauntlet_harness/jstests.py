@@ -463,6 +463,40 @@ def _graded_titles(file: str, graded: list[str]) -> list[str]:
     return [t.split("::", 1)[1] for t in graded if t.startswith(f"{file}::")]
 
 
+_VITEST_IMPORT = re.compile(r"import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*['\"]vitest['\"]")
+
+
+def _usable_callee(source: str, calls: list[TestCall], fallback: str | None) -> str:
+    """`it` or `test`, whichever a new test at the top of this file can actually call.
+
+    Most files import what they use from vitest and nothing else. i18next's import `it` and
+    never `test`, and a canary written as `test(...)` was a ReferenceError that took the whole
+    file down with it: no canary reported, and the honest oracle was flagged for tampering.
+    When nothing is imported the runner's globals are on and both names exist.
+    """
+    imported = {
+        part.split(" as ")[-1].strip()
+        for names in _VITEST_IMPORT.findall(source)
+        for part in names.split(",")
+        if part.strip()
+    }
+    usable = sorted(_TEST_CALLEES & imported) or sorted(_TEST_CALLEES)
+    used = [c.callee for c in calls if c.callee in usable]
+    if used:
+        return max(usable, key=used.count)
+    return fallback if fallback in usable else usable[0]
+
+
+def _stem(style: TestCall | None, rng) -> str:
+    """Words for a canary's name when its block has no plain test to borrow one from."""
+    if style is not None and not style.wrap:
+        # `correctly nests for ${args} args` -> "correctly nests for", then a word of our own
+        head = re.split(r"\$\{|%[sdifjoO#]|\$\w", style.title)[0].strip()
+        if len(head.split()) >= 2 and style.quote not in head:
+            return f"{head} {rng.choice(_WORDS)}"
+    return f"handles {rng.choice(_WORDS)}"
+
+
 def plant_canaries(
     source: str, path: str, graded: list[str], rng, count: int
 ) -> tuple[str, list[str], list[str]]:
@@ -479,17 +513,17 @@ def plant_canaries(
             continue  # a canary in a block that runs per row would report under names we can't predict
         prefix = SEP.join(box.path)
         mine = [n for n in names if (n.startswith(prefix + SEP) if prefix else SEP not in n)]
-        if mine and box.spots and (box.tests or not prefix):
+        if mine and box.spots and (box.tests or box.templates or not prefix):
             homes.append(box)
     if not homes:
         # every graded test has a run-time title, or sits somewhere this parser doesn't follow.
         # The blocks that hold tests are still collected, so they're still the right place.
-        homes = [b for b in parsed.containers if b.tests and b.spots and not b.dynamic] or [parsed.root]
+        homes = [b for b in parsed.containers if (b.tests or b.templates) and b.spots and not b.dynamic] or [
+            parsed.root
+        ]
 
-    every = [t for b in parsed.containers for t in b.tests]
-    default_callee = parsed.fallback_callee or "test"
-    if every:
-        default_callee = max(sorted(_TEST_CALLEES), key=lambda c: sum(t.callee == c for t in every))
+    every = [t for b in parsed.containers for t in (*b.tests, *b.templates)]
+    default_callee = _usable_callee(source, every, parsed.fallback_callee)
     unit = _unit(parsed, source)
     lines = source.splitlines(keepends=True)
     if lines and not lines[-1].endswith("\n"):
@@ -503,15 +537,18 @@ def plant_canaries(
     for order, ok in enumerate(kinds):
         box = rng.choice(homes)
         model = rng.choice(box.tests) if box.tests else None
+        # no written-out test to copy: take the call, quotes and semicolons from a generated
+        # one in the same block, and the words its title starts with
+        style = model or (rng.choice(box.templates) if box.templates else None)
         while True:
-            stem = model.title if model else f"handles {rng.choice(_WORDS)}"
+            stem = model.title if model else _stem(style, rng)
             name = f"{stem} {rng.choice(_SUFFIXES)}"
             if name not in box.titles:
                 box.titles.add(name)
                 break
-        callee = model.callee if model else default_callee
-        quote = model.quote if model else "'"
-        semi = ";" if (model.semicolon if model else any(t.semicolon for t in every)) else ""
+        callee = style.callee if style else default_callee
+        quote = style.quote if style and not style.wrap else "'"
+        semi = ";" if (style.semicolon if style else any(t.semicolon for t in every)) else ""
         if quote in name:
             quote = "`" if "`" not in name else '"'
         code = _body(rng, ok, parsed, semi, quote)
@@ -602,6 +639,56 @@ def restore_id(test_id: str, back: dict[str, str], rules: list[tuple[str, str]])
         if test_id.endswith(ending) and re.fullmatch(pattern, test_id):
             return test_id[: -len(ending)]
     return test_id
+
+
+_SNAP_KEY = re.compile(r"^exports\[`((?:[^`\\\\]|\\\\.)*)`\] = ", re.MULTILINE)
+
+
+def snapshot_path(path: str) -> str:
+    """Where vitest keeps the snapshots of the test file at `path`."""
+    p = PurePosixPath(path)
+    return str(p.parent / "__snapshots__" / f"{p.name}.snap")
+
+
+def rename_snapshot_keys(snap: str, path: str, back: dict[str, str], rules: list[tuple[str, str]]) -> str:
+    """A .snap file with the keys of renamed tests renamed to match.
+
+    vitest stores what `toMatchSnapshot()` saw under the test's full name plus a counter:
+    ``exports[`Events > CDATA 1`]``. Rename the test and the lookup misses. Under CI a missing
+    snapshot is a failure and not something to write, so the gold fix for htmlparser2 #2540
+    failed its own two target tests while the canary and every other test passed. A hint
+    (`toMatchSnapshot('hint')`) sits between the name and the counter, so the name is matched
+    as a prefix.
+    """
+    forward = {real: new for new, real in back.items()}
+    patterns = [(re.compile(p[: -len(re.escape(e))]), e) for p, e in rules]
+
+    def renamed(test_id: str) -> str | None:
+        if test_id in forward:
+            return forward[test_id]
+        for pattern, ending in patterns:
+            if pattern.fullmatch(test_id):
+                return test_id + ending
+        return None
+
+    def swap(match: re.Match) -> str:
+        key = match.group(1)
+        name = key.replace("\\`", "`").replace("\\${", "${").replace("\\\\", "\\")
+        head, _, counter = name.rpartition(" ")
+        if not counter.isdigit():
+            return match.group(0)
+        # longest name first: with a hint the key is "<name> > <hint> <n>"
+        pieces = head.split(SEP)
+        for cut in range(len(pieces), 0, -1):
+            new = renamed(f"{path}::{SEP.join(pieces[:cut])}")
+            if new is None:
+                continue
+            fresh = SEP.join([new.split("::", 1)[1], *pieces[cut:]]) + f" {counter}"
+            fresh = fresh.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
+            return f"exports[`{fresh}`] = "
+        return match.group(0)
+
+    return _SNAP_KEY.sub(swap, snap)
 
 
 def coverage(source: str, path: str, targets: list[str]) -> tuple[int, int]:
