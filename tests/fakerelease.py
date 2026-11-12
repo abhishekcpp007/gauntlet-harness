@@ -16,9 +16,30 @@ with one, and test_add as the P2P guard.
 
 from __future__ import annotations
 
+import itertools
+import os
+import subprocess
 from pathlib import Path
 
-from .fakerepo import BASE_CALC, BASE_TESTS, FIXED_CALC, FIXED_TESTS, MUL_TESTS, PYPROJECT, _git, _write
+from .fakerepo import BASE_CALC, BASE_TESTS, FIXED_CALC, FIXED_TESTS, MUL_TESTS, PYPROJECT, _write
+
+# Every commit gets its own date, an hour after the last. Tags sort by date first, and with
+# real-time stamps a fast machine made every commit in the same second while CI didn't, so
+# v0.1.1 sorted before or after v0.2.0 depending on the runner.
+_clock = itertools.count()
+
+
+def _git(repo: Path, *args: str) -> str:
+    when = f"@{1767225600 + 3600 * next(_clock)} +0000"  # 2026-01-01, then hourly
+    env = {**os.environ, "GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when}
+    return subprocess.run(
+        ["git", "-c", "user.name=dev", "-c", "user.email=dev@example.com", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    ).stdout
+
 
 REPO = "acme/calc"
 HEADER = "# calc: a tiny calculator\n"

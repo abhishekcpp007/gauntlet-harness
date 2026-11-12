@@ -54,15 +54,16 @@ def _sha(repo: Repo, ref: str) -> str:
 
 
 def test_release_tags_skip_prereleases_unless_asked(repo):
-    assert release_tags(repo) == ["v0.1.0", "v0.1.1", "v0.2.0"]
+    # v0.1.1 was cut after v0.2.0, the way a maintenance release usually is
+    assert release_tags(repo) == ["v0.1.0", "v0.2.0", "v0.1.1"]
     assert "v0.2.0rc1" in release_tags(repo, prereleases=True)
 
 
 def test_each_release_pairs_with_its_newest_ancestor_release(repo):
     # v0.1.1 sits on a side branch: it is its own patch release off v0.1.0, and it must not
     # become the start of v0.2.0's range, since nothing on main descends from it
-    assert release_ranges(repo) == [("v0.1.0", "v0.1.1"), ("v0.1.0", "v0.2.0")]
-    assert release_ranges(repo, last=1) == [("v0.1.0", "v0.2.0")]
+    assert release_ranges(repo) == [("v0.1.0", "v0.2.0"), ("v0.1.0", "v0.1.1")]
+    assert release_ranges(repo, last=1) == [("v0.1.0", "v0.1.1")]  # newest by date
 
 
 def test_prs_in_range_reads_merges_squashes_and_direct_commits(repo):
