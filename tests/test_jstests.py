@@ -276,9 +276,58 @@ def test_a_generated_test_is_never_a_name_to_borrow_or_a_place_to_plant():
         assert all("${" not in t and "JSON" not in t for t in (*fail_ids, *pass_ids))
 
 
+HELPERS = (
+    HEAD
+    + """\
+function runBaseTest(name, autoFreeze) {
+  describe(`base functionality - ${name}`, () => {
+    it('patches are replayable', () => {
+      expect(autoFreeze).toBeDefined()
+    })
+  })
+}
+
+const check = (name) => {
+  it(name, () => {})
+}
+
+runBaseTest('proxy', true)
+runBaseTest('es5', false)
+describe('wrapped', () => {
+  check('one')
+})
+"""
+)
+HELPER_IDS = [
+    "a.test.js::base functionality - proxy > patches are replayable",
+    "a.test.js::base functionality - es5 > patches are replayable",
+    "a.test.js::wrapped > one",
+]
+
+
+def test_tests_registered_from_a_helper_function_are_renamed():
+    """immer #1345: eight targets, all made by a function called once per configuration, and
+    the first renamer reached none of them."""
+    assert jstests.coverage(HELPERS, "a.test.js", HELPER_IDS) == (3, 3)
+    out, back, rules = jstests.rename_targets(HELPERS, "a.test.js", HELPER_IDS, random.Random(2))
+    assert _parses(out, "a.test.js") and not back and len(rules) == 2
+    for real in HELPER_IDS:
+        ending = next(e for p, e in rules if re.fullmatch(p, real + e))
+        assert jstests.restore_id(real + ending, back, rules) == real
+    # a canary never goes inside the function: it would be registered once per call
+    for seed in range(8):
+        planted, fail_ids, pass_ids = jstests.plant_canaries(
+            HELPERS, "a.test.js", HELPER_IDS, random.Random(seed), 2
+        )
+        assert _parses(planted, "a.test.js") and len({*fail_ids, *pass_ids}) == 4
+        start = planted.index("function runBaseTest")
+        body = planted[start : planted.index("\n}\n", start)]
+        assert body.count("it(") == 1
+
+
 def test_coverage_counts_what_the_disguise_cannot_reach():
-    # a test registered from inside a helper function: nothing at the call site says it's a test
-    source = HEAD + "function check(name) {\n  it(name, () => {})\n}\n\ncheck('one')\ncheck('two')\n"
+    # a title that arrives through a function the file imports: there is no source to read
+    source = HEAD + "import { cases } from './cases.js'\n\ncases(it)\n"
     assert jstests.coverage(source, "a.test.js", ["a.test.js::one", "a.test.js::two"]) == (0, 2)
 
 
@@ -455,3 +504,19 @@ def test_snapshot_keys_follow_a_rename():
     assert out.count('"event": "oncdatastart"') == 1 and out.count("`;") == SNAP.count("`;")
     assert jstests.rename_snapshot_keys(SNAP, path, {}, []) == SNAP
     assert jstests.snapshot_path(path) == "src/__snapshots__/Parser.events.spec.ts.snap"
+
+
+def test_a_describe_kept_in_a_variable_is_still_followed():
+    """immer's patch tests: `let describeFn = describe`, then `describeFn(name, () => {...})`
+    inside a function. The first helper support read the function and stopped at that call."""
+    source = (
+        HEAD
+        + "function runPatchTests(name) {\n  let describeFn = describe\n"
+        + "  describeFn(name, () => {\n    it('patches are replayable', () => {})\n  })\n}\n\n"
+        + "describe('array', () => {\n  runPatchTests('modified draft')\n})\n"
+    )
+    ids = ["a.test.js::array > modified draft > patches are replayable"]
+    assert jstests.coverage(source, "a.test.js", ids) == (1, 1)
+    out, back, rules = jstests.rename_targets(source, "a.test.js", ids, random.Random(1))
+    assert _parses(out, "a.test.js")
+    assert jstests.restore_id(ids[0] + rules[0][1], back, rules) == ids[0]

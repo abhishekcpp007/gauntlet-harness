@@ -234,6 +234,30 @@ def _function_body(node):
     return body if body is not None and body.type == "statement_block" else None
 
 
+_HELPER = "\0helper"  # marks a nested block that is a function body, not a describe block
+_DECLARATIONS = {"lexical_declaration", "variable_declaration"}
+
+
+def _helper_bodies(st) -> list:
+    """The bodies of functions `st` declares: `function check(name) {...}`, `const check = (name) => {...}`.
+
+    immer writes whole groups of tests this way, a describe block inside a function that is then
+    called once per configuration. Nothing at the call site says a test is being made, so the
+    function body is read instead, as a block that can end up anywhere.
+    """
+    if st.type == "export_statement":
+        st = st.child_by_field_name("declaration")
+        if st is None:
+            return []
+    if st.type in ("function_declaration", "generator_function_declaration"):
+        body = st.child_by_field_name("body")
+        return [body] if body is not None and body.type == "statement_block" else []
+    if st.type in _DECLARATIONS:
+        bodies = [_function_body(c.child_by_field_name("value")) for c in st.named_children]
+        return [b for b in bodies if b is not None]
+    return []
+
+
 def parse(source: str, path: str) -> JsFile | None:
     src = source.encode("utf-8")
     tree = _parser(path).parse(src)
@@ -264,6 +288,10 @@ def parse(source: str, path: str) -> JsFile | None:
             if not looped and not bad and _starts_its_line(st, lines):
                 box.spots.append(_comment_run(st.start_point[0], lines))
             if bad and st.type != "expression_statement":
+                continue
+            helpers = _helper_bodies(st)
+            if helpers:
+                nested.extend(("", _HELPER, body) for body in helpers)
                 continue
             if st.type in _LOOPS or st.type == "statement_block":
                 body = st.child_by_field_name("body") if st.type in _LOOPS else st
@@ -309,8 +337,18 @@ def parse(source: str, path: str) -> JsFile | None:
                     and src[prop.start_byte : prop.end_byte].decode() in _ITERATORS
                 ):
                     scan(body.named_children, box, nested, True)
+                elif body is not None:
+                    nested.append(("", _HELPER, body))
                 continue
             base, kind = who
+            if base not in _TEST_CALLEES and base not in _SUITE_CALLEES:
+                # describeFn(name, () => { test(...) }): some other function is handed a
+                # callback. immer picks `describe` or a pass-through into a variable and calls
+                # that. Whatever it is, tests in the callback may land under any block.
+                body = _function_body(named[-1]) if named and not bad else None
+                if body is not None:
+                    nested.append(("", _HELPER, body))
+                continue
             title = _title(named[0] if named else None, src)
             if title is None:
                 continue
@@ -359,6 +397,11 @@ def parse(source: str, path: str) -> JsFile | None:
             box = Container(
                 path=(*parent.path, name), indent=indent, pattern=parent.pattern + re.escape(name + SEP)
             )
+        elif piece is _HELPER:
+            # tests written inside a function, to be registered wherever it is called from:
+            # under the top of the file, or under any number of describe blocks
+            anywhere = parent.pattern + "(?:.*" + re.escape(SEP) + ")?"
+            box = Container(path=parent.path, indent=indent, pattern=anywhere, dynamic=True)
         else:  # a describe block whose name isn't known until it runs
             box = Container(
                 path=parent.path, indent=indent, pattern=parent.pattern + piece + re.escape(SEP), dynamic=True
