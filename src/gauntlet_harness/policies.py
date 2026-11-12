@@ -63,6 +63,24 @@ class Policy(ABC):
         return obs, terminated or truncated
 
 
+ORACLE_CHUNK = 64_000
+
+
+def _chunks(text: str, size: int) -> list[str]:
+    """Split on line ends into pieces of at most `size` bytes (a longer single line stands alone)."""
+    out, buf, n = [], [], 0
+    for line in text.splitlines(keepends=True):
+        b = len(line.encode())
+        if buf and n + b > size:
+            out.append("".join(buf))
+            buf, n = [], 0
+        buf.append(line)
+        n += b
+    if buf:
+        out.append("".join(buf))
+    return out
+
+
 class OraclePolicy(Policy):
     name = "oracle"
 
@@ -72,8 +90,16 @@ class OraclePolicy(Policy):
         gold = env.task.gold_patch
         if ORACLE_EOF in gold:  # never seen in practice, but don't let a patch end the heredoc
             raise RuntimeError("gold patch contains the heredoc sentinel")
-        cmd = f"cat > /tmp/oracle.diff <<'{ORACLE_EOF}'\n{gold}\n{ORACLE_EOF}\ngit apply /tmp/oracle.diff"
-        _, done = self._step(env, {"type": "bash", "command": cmd})
+        # One command per chunk: Linux caps a single argument at 128 KB (MAX_ARG_STRLEN) and the
+        # whole command is one argument to `sh -c`. A release range's gold patch can be 270 KB,
+        # and sent in one go the command never ran, so the oracle submitted nothing.
+        for i, chunk in enumerate(_chunks(gold if gold.endswith("\n") else gold + "\n", ORACLE_CHUNK)):
+            op = ">" if i == 0 else ">>"
+            cmd = f"cat {op} /tmp/oracle.diff <<'{ORACLE_EOF}'\n{chunk}{ORACLE_EOF}"
+            _, done = self._step(env, {"type": "bash", "command": cmd})
+            if done:
+                return
+        _, done = self._step(env, {"type": "bash", "command": "git apply /tmp/oracle.diff"})
         if not done:
             self._step(env, {"type": "submit"})
 

@@ -65,8 +65,21 @@ def test_make_policy():
 def test_oracle_applies_gold_and_submits():
     env = FakeEnv(gold="diff --git a/x.py b/x.py\n+fixed\n")
     OraclePolicy().run(env)
-    assert "+fixed" in env.actions[0]["command"] and "git apply" in env.actions[0]["command"]
+    assert "+fixed" in env.actions[0]["command"]
+    assert env.actions[1]["command"] == "git apply /tmp/oracle.diff"
     assert env.actions[-1] == {"type": "submit"}
+
+
+def test_oracle_sends_a_big_gold_patch_in_pieces_that_fit_one_argument():
+    # Linux caps one argv string at 128 KB, and `sh -c` gets the whole command as one
+    gold = "diff --git a/x.py b/x.py\n" + "".join(f"+line {i}\n" for i in range(30_000))  # ~330 KB
+    env = FakeEnv(gold=gold)
+    OraclePolicy().run(env)
+    writes = [a["command"] for a in env.actions if a["type"] == "bash" and a["command"].startswith("cat ")]
+    assert len(writes) > 1 and all(len(c.encode()) < 128 * 1024 for c in writes)
+    assert writes[0].startswith("cat > ") and all(c.startswith("cat >> ") for c in writes[1:])
+    body = "".join(c.split("\n", 1)[1].rsplit("GAUNTLET", 1)[0] for c in writes)
+    assert body == gold  # every byte, in order
 
 
 def test_noop_submits():
