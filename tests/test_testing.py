@@ -52,6 +52,18 @@ def test_flaky_tests_are_dropped():
     assert t.ok
 
 
+def test_a_test_that_failed_once_without_the_fix_is_not_a_target():
+    """radashi #481: one test timed out in the `test` run on a loaded machine and passed in both
+    fix runs. That read as fail-to-pass, and a patch that changed nothing was paid for it."""
+    test = {"real": F, "slow": F, "ok": P}
+    fixes = [{"real": P, "slow": P, "ok": P}, {"real": P, "slow": P, "ok": P}]
+    assert classify({}, test, fixes).f2p == ["real", "slow"]  # one test run can't tell them apart
+    t = classify({}, test, fixes, [{"real": F, "slow": P, "ok": P}])
+    assert t.f2p == ["real"] and t.flaky == ["slow"] and t.p2p == ["ok"] and t.ok
+    # a repeat that produced no report says nothing, and must not mark every test flaky
+    assert classify({}, test, fixes, [{}]).f2p == ["real", "slow"]
+
+
 def test_needs_a_fix_run():
     with pytest.raises(ValueError):
         classify({}, {}, [])

@@ -334,6 +334,9 @@ def build_task(
         timings["run"] = round(time.monotonic() - t, 2)
         t = time.monotonic()
         test = run_once(True, False)
+        # as many repeats as the fix gets: a test that only failed here by accident would
+        # otherwise become a target, see testing.py
+        test_repeats = [run_once(True, False) for _ in range(max(1, fix_runs) - 1)]
         timings["test"] = round(time.monotonic() - t, 2)
         t = time.monotonic()
         fixes = [run_once(True, True) for _ in range(max(1, fix_runs))]
@@ -361,7 +364,7 @@ def build_task(
         return retry
 
     # 5. transitions
-    trans = classify(run, test, fixes)
+    trans = classify(run, test, fixes, test_repeats)
     runs_summary = {"run": summarize(run), "test": summarize(test), "fix": [summarize(f) for f in fixes]}
     if not trans.ok:
         return reject(
@@ -381,6 +384,7 @@ def build_task(
         "seconds": timings,
         "env_reused": reused,
         "fix_runs": len(fixes),
+        "test_runs": 1 + len(test_repeats),
         "statement_leak": leaked,
         "scope": scope,
         "rules": "multi-swe-bench",

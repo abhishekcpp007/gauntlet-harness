@@ -12,6 +12,12 @@ The rules follow Multi-SWE-bench (Zan et al., 2025):
 
 On top of that, `fix` can run more than once. Tests whose status changes between those
 repeats are flaky and get dropped from every list, so they never decide a grade.
+
+`test` can be repeated too, and for a reason the fix repeats don't cover. A test that fails
+once in `test` for no reason of its own (a timeout on a loaded machine) and then passes in
+every `fix` run reads as FAILED -> PASSED, a target the fix never touched. Anyone gets credit
+for it, including a patch that changes nothing. A second `test` run disagrees with the first
+and the test is dropped as flaky.
 """
 
 from __future__ import annotations
@@ -116,17 +122,25 @@ class Transitions(BaseModel):
 
 
 def classify(
-    run: dict[str, Status], test: dict[str, Status], fix_runs: list[dict[str, Status]]
+    run: dict[str, Status],
+    test: dict[str, Status],
+    fix_runs: list[dict[str, Status]],
+    test_repeats: list[dict[str, Status]] | None = None,
 ) -> Transitions:
     if not fix_runs:
         raise ValueError("classify needs at least one fix run")
     fix = fix_runs[0]
-    every = set(run) | set(test) | {t for f in fix_runs for t in f}
+    repeats = [r for r in test_repeats or [] if r]  # an empty repeat is a run that gave no report
+    every = set(run) | set(test) | {t for f in fix_runs for t in f} | {t for r in repeats for t in r}
 
     def get(results: dict[str, Status], test_id: str) -> Status:
         return results.get(test_id, Status.NONE)
 
-    flaky = sorted(t for t in every if len({get(f, t) for f in fix_runs}) > 1)
+    flaky = sorted(
+        t
+        for t in every
+        if len({get(f, t) for f in fix_runs}) > 1 or len({get(r, t) for r in (test, *repeats)}) > 1
+    )
     out = Transitions(flaky=flaky)
     stable = sorted(every - set(flaky))
 
