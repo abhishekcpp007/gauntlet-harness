@@ -267,7 +267,7 @@ class OpenAIPolicy(Policy):
         model: str,
         *,
         base_url: str | None = None,
-        max_steps: int = 60,
+        max_steps: int | None = None,  # None follows the env, which follows the task category
         client: Any = None,
     ) -> None:
         super().__init__()
@@ -307,7 +307,7 @@ class OpenAIPolicy(Policy):
             {"role": "user", "content": obs},
         ]
         self._log("user", obs)
-        for _ in range(self.max_steps):
+        for _ in range(self.max_steps or getattr(env, "max_steps", 60)):
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,

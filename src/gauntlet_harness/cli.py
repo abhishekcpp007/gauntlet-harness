@@ -99,7 +99,6 @@ def cmd_collect(args: argparse.Namespace) -> int:
 
 def cmd_build(args: argparse.Namespace) -> int:
     from .build import build_task
-    from .leakcheck import leakcheck
 
     prs = _read_models(args.prs, PRInfo)
     out, rej = _out(args.output), _out(args.rejected)
@@ -118,27 +117,99 @@ def cmd_build(args: argparse.Namespace) -> int:
             _say(f"  rejected at {result.stage}: {result.reason}")
             _append(rej, result)
             continue
-        task: HarnessTask = result
-        if not args.no_leakcheck:
-            report = leakcheck(task)
-            task.validation["leakcheck"] = report.model_dump()
-            if not report.ok:
-                bad = [name for name, c in report.checks.items() if not c.ok]
-                _say(f"  rejected at leak: {', '.join(bad)}")
-                info = {name: report.checks[name].detail for name in bad}
-                why = Rejected(instance_id=task.instance_id, stage="leak", reason=", ".join(bad), detail=info)
-                _append(rej, why)
-                continue
-        if client is not None:
-            from .judge import generate_rubric
-            from .rubric import default_rubric
-
-            task.rubric = default_rubric(task) + generate_rubric(task, client, model=args.judge_model)
-        kept += 1
-        counts = ", ".join(f"{k}={len(getattr(task, k))}" for k in ("f2p", "n2p", "s2p", "p2p"))
-        _say(f"  TASK {task.instance_id}: {counts}")
-        _append(out, task)
+        if _keep(result, args, out, rej, client):
+            kept += 1
     print(f"built {kept} task(s) from {len(prs)} PRs into {out} (rejections in {rej})")
+    return 0 if kept else 1
+
+
+def _keep(task: HarnessTask, args: argparse.Namespace, out: Path, rej: Path, client: Any) -> bool:
+    """Leak check, optional LLM rubric, then write the task. Shared by build and build-lht."""
+    from .leakcheck import leakcheck
+
+    if not args.no_leakcheck:
+        report = leakcheck(task)
+        task.validation["leakcheck"] = report.model_dump()
+        if not report.ok:
+            bad = [name for name, c in report.checks.items() if not c.ok]
+            _say(f"  rejected at leak: {', '.join(bad)}")
+            info = {name: report.checks[name].detail for name in bad}
+            _append(
+                rej, Rejected(instance_id=task.instance_id, stage="leak", reason=", ".join(bad), detail=info)
+            )
+            return False
+    if client is not None:
+        from .judge import generate_rubric
+        from .rubric import default_rubric
+
+        task.rubric = default_rubric(task) + generate_rubric(task, client, model=args.judge_model)
+    counts = ", ".join(f"{k}={len(getattr(task, k))}" for k in ("f2p", "n2p", "s2p", "p2p"))
+    if task.horizon is not None:
+        counts += f", milestones={len(task.horizon.milestones)}, prs={len(task.horizon.prs)}"
+    _say(f"  TASK {task.instance_id} [{task.category}]: {counts}")
+    _append(out, task)
+    return True
+
+
+def cmd_ranges(args: argparse.Namespace) -> int:
+    """List the release ranges a repo offers, newest last, as `from to` pairs."""
+    from gauntlet_repo2env.repo import clone, git
+
+    from .lht import prs_in_range, release_ranges
+
+    repo = clone(args.repo_url or f"https://github.com/{args.repo}.git")
+    for a, b in release_ranges(repo, last=args.last, prereleases=args.prereleases):
+        base = git(repo.path, "rev-parse", f"{a}^{{commit}}").strip()
+        head = git(repo.path, "rev-parse", f"{b}^{{commit}}").strip()
+        prs, direct = prs_in_range(repo, args.repo, base, head)
+        print(f"{a}\t{b}\t{len(prs)} PRs\t{len(direct)} direct commits")
+    return 0
+
+
+def cmd_build_lht(args: argparse.Namespace) -> int:
+    from gauntlet_repo2env.repo import clone
+
+    from .lht import build_range_task, release_ranges
+
+    if args.range:
+        pairs = [tuple(r.split("..", 1)) for r in args.range]
+        if any(len(p) != 2 for p in pairs):
+            raise SystemExit("--range takes FROM..TO, for example v1.2.0..v1.3.0")
+    else:
+        pairs = release_ranges(clone(args.repo_url or f"https://github.com/{args.repo}.git"), last=args.last)
+    out, rej = _out(args.output), _out(args.rejected)
+    if not args.append:
+        out.write_text("")
+        rej.write_text("")
+    client = _claude_client() if args.rubric else None
+    kept = 0
+    for a, b in pairs:
+        _say(f"{args.repo} {a} -> {b}")
+        try:
+            result = build_range_task(
+                args.repo,
+                a,
+                b,
+                python=args.python,
+                fix_runs=args.fix_runs,
+                repo_url=args.repo_url,
+                max_prs=args.max_prs,
+                max_gold_lines=args.max_gold_lines,
+                log=_say,
+            )
+        except Exception as e:
+            from .lht import range_id
+
+            result = Rejected(
+                instance_id=range_id(args.repo, a, b), stage="crash", reason=f"{type(e).__name__}: {e}"[:500]
+            )
+        if isinstance(result, Rejected):
+            _say(f"  rejected at {result.stage}: {result.reason}")
+            _append(rej, result)
+            continue
+        if _keep(result, args, out, rej, client):
+            kept += 1
+    print(f"built {kept} LHT task(s) from {len(pairs)} release range(s) into {out} (rejections in {rej})")
     return 0 if kept else 1
 
 
@@ -175,6 +246,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     from .runner import run
 
     tasks = _read_models(args.tasks, HarnessTask)
+    if args.category:
+        tasks = [t for t in tasks if t.category == args.category]
     policies = [p.strip() for p in args.policies.split(",") if p.strip()]
     needs_claude = any(p.startswith("claude") for p in policies)
     client = _claude_client()
@@ -416,7 +489,7 @@ def main(argv: list[str] | None = None) -> int:
                        help="comma separated: oracle, noop, cheater, claude:<model id>")  # fmt: skip
         p.add_argument("--attempts", type=int, default=1, help="episodes per task per policy (for pass@k)")
         p.add_argument("--workers", type=int, default=2)
-        p.add_argument("--max-steps", type=int, default=60)
+        p.add_argument("--max-steps", type=int, default=None, help="default: 60 for swe, 400 for lht")
         p.add_argument(
             "--judge", action="store_true", help="LLM rubric judging (needs Anthropic credentials)"
         )
@@ -457,12 +530,37 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--judge-model", default="claude-opus-5-5")
     p.set_defaults(fn=cmd_build)
 
+    p = sub.add_parser("ranges", help="list a repo's release ranges, the raw material for LHT tasks")
+    p.add_argument("--repo", required=True, help="owner/name")
+    p.add_argument("--repo-url", help="clone from here instead of GitHub (a local path works)")
+    p.add_argument("--last", type=int, help="only the newest N ranges")
+    p.add_argument("--prereleases", action="store_true", help="count rc/alpha/beta tags as releases")
+    p.set_defaults(fn=cmd_ranges)
+
+    p = sub.add_parser("build-lht", help="turn release ranges (X to Y) into long-horizon tasks")
+    p.add_argument("--repo", required=True, help="owner/name")
+    p.add_argument("--repo-url", help="clone from here instead of GitHub (a local path works)")
+    p.add_argument("--range", action="append", help="FROM..TO, repeatable; default is every range")
+    p.add_argument("--last", type=int, help="with no --range, only the newest N ranges")
+    p.add_argument("-o", "--output", default="lht_tasks.jsonl")
+    p.add_argument("--rejected", default="lht_rejected.jsonl")
+    p.add_argument("--append", action="store_true", help="add to the output files instead of starting over")
+    p.add_argument("--python", default="3.12")
+    p.add_argument("--fix-runs", type=int, default=2)
+    p.add_argument("--max-prs", type=int, default=40)
+    p.add_argument("--max-gold-lines", type=int, default=6000)
+    p.add_argument("--no-leakcheck", action="store_true")
+    p.add_argument("--rubric", action="store_true", help="add LLM-written rubric items (needs credentials)")
+    p.add_argument("--judge-model", default="claude-opus-5-5")
+    p.set_defaults(fn=cmd_build_lht)
+
     p = sub.add_parser("leakcheck", help="re-run the leak checks on built tasks")
     p.add_argument("--tasks", required=True)
     p.set_defaults(fn=cmd_leakcheck)
 
     p = sub.add_parser("run", help="run policies on tasks")
     p.add_argument("--tasks", required=True)
+    p.add_argument("--category", choices=["swe", "lht"], help="only run tasks of this category")
     p.add_argument("-o", "--output", default="runs")
     runner_args(p)
     p.set_defaults(fn=cmd_run)
@@ -478,7 +576,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--task", help="instance_id, defaults to the first task")
     p.add_argument("--policy", default="external", help="name recorded in results")
     p.add_argument("--port", type=int, default=8765)
-    p.add_argument("--max-steps", type=int, default=60)
+    p.add_argument("--max-steps", type=int, default=None, help="default: 60 for swe, 400 for lht")
     p.add_argument("-o", "--output", default="runs")
     p.set_defaults(fn=cmd_serve)
 

@@ -56,6 +56,36 @@ report (report.py)
 - `runner.run(tasks, policies, *, attempts, out_dir, workers) -> list[EpisodeResult]`
 - `report.summarize(results) -> dict` and markdown / HTML rendering
 
+## Two task categories
+
+`HarnessTask.category` is `swe` or `lht`. Old task files have no field and load as `swe`.
+
+- **swe** is one merged PR. `build.build_task`. Multi-SWE-bench transition rules, strict.
+- **lht** is a release range. `lht.build_range_task(slug, from_ref, to_ref)`. It sets
+  `task.horizon` (`Horizon`: refs, PRs in merge order, direct commits, milestones, dropped
+  regressions, gold size). Same three validation runs. A regression in the fix run drops that
+  test from grading, up to `min(5, 2% of stable tests)`; past that the range is rejected,
+  because that many means the env is wrong.
+
+What's per category lives in `profiles.py` (`Profile`: max_steps, command_timeout,
+grade_timeout, reward weights). `SWEEnv`, `runner.run` and `grade_patch` take their defaults
+from `profile_for(task)` unless the caller passes a value.
+
+Milestone attribution (`lht.attribute`): a target test goes to the last PR in the range whose
+test diff adds `def <its name>` in its file, else to the only PR that touched its file, else
+to `unattributed`. `grading.milestone_rates` fills `GradeResult.milestones` only on a trusted
+run; a tampered run scores 0 on every milestone. `RewardConfig.milestone_credit` swaps the
+partial-credit term from target rate to mean milestone rate.
+
+Ranges (`lht.release_ranges`): release tags sorted by date then version number, each paired
+with the newest earlier release that is its git ancestor. A maintenance tag on a side branch
+pairs with its own line and never starts a main-line range.
+
+The env is built at the older release. If the release changed dependencies, the fix runs
+fail or go missing and validation rejects the range. That's measured, not assumed.
+
+Reports group by category first and never pool them (`report.summarize`).
+
 ## Leak rules
 
 1. The agent never sees `.git` history beyond a single scratch commit of the base tree.

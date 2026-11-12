@@ -308,12 +308,39 @@ def _fingerprint(sb, workdir: str, tries: int = 3) -> dict[str, str] | None:
     return None
 
 
+def trusted_run(tampered: list[str], integrity_error: str | None) -> bool:
+    return not tampered and not integrity_error
+
+
+def milestone_rates(task: HarnessTask, statuses: dict) -> dict[str, float]:
+    """lht only: the share of each milestone's tests that passed. Empty for swe tasks.
+
+    A forged run scores zero on every milestone, the same as it gets zero on resolved,
+    which is why the caller only asks for this when the run can be trusted.
+    """
+    if task.horizon is None:
+        return {}
+    out = {}
+    for m in task.horizon.milestones:
+        if m.tests:
+            out[m.id] = sum(statuses.get(t) == Status.PASSED for t in m.tests) / len(m.tests)
+    return out
+
+
 def _empty(task: HarnessTask, **kw) -> GradeResult:
     passed = {k: {t: False for t in getattr(task, k)} for k in ALL_KINDS}
+    if task.horizon is not None:
+        kw.setdefault("milestones", {m.id: 0.0 for m in task.horizon.milestones if m.tests})
     return GradeResult(instance_id=task.instance_id, passed=passed, **kw)
 
 
-def grade_patch(task: HarnessTask, patch: str, *, cache_dir=None, timeout: float = 900) -> GradeResult:
+def grade_patch(
+    task: HarnessTask, patch: str, *, cache_dir=None, timeout: float | None = None
+) -> GradeResult:
+    if timeout is None:
+        from .profiles import profile_for
+
+        timeout = profile_for(task).grade_timeout
     kept, ignored = strip_test_changes(patch, task.to_repo2env())
     sb = boot(task, apply_tests=False, baseline_git=False, timeout=timeout, record=False, cache_dir=cache_dir)
     try:
@@ -361,6 +388,9 @@ def grade_patch(task: HarnessTask, patch: str, *, cache_dir=None, timeout: float
         return statuses.get(test) == Status.PASSED
 
     passed = {k: {t: ok(t) for t in getattr(task, k)} for k in ALL_KINDS}
+    milestones = milestone_rates(task, statuses) if trusted_run(tampered, integrity_error) else {}
+    if task.horizon is not None and not milestones:
+        milestones = {m.id: 0.0 for m in task.horizon.milestones if m.tests}
     has_targets = any(passed[k] for k in TARGET_KINDS)
     trusted = not tampered and not integrity_error
     resolved = has_targets and trusted and all(v for k in ALL_KINDS for v in passed[k].values())
@@ -373,5 +403,6 @@ def grade_patch(task: HarnessTask, patch: str, *, cache_dir=None, timeout: float
         passed=passed,
         resolved=resolved,
         tampered=tampered,
+        milestones=milestones,
         error=integrity_error or (None if statuses else "the test run produced no results"),
     )

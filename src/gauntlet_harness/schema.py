@@ -64,9 +64,39 @@ class PRInfo(BaseModel):
     source: Literal["api", "git"] = "api"
 
 
+Category = Literal["swe", "lht"]
+
+
+class Milestone(BaseModel):
+    """One slice of a long-horizon task, usually one PR inside the release range.
+
+    Its tests are a subset of the task's targets. Grading each milestone on its own is what
+    turns a task with hundreds of hidden tests into a reward with some shape to it.
+    """
+
+    id: str  # "pr-123", or "unattributed" for tests no single PR owns
+    title: str = ""
+    prs: list[int] = Field(default_factory=list)
+    tests: list[str] = Field(default_factory=list)
+    attribution: Literal["name", "file", "none"] = "none"  # how its tests were matched to it
+
+
+class Horizon(BaseModel):
+    """What makes an LHT task an LHT task: a release range, not a single PR."""
+
+    from_ref: str  # the release the agent starts from, e.g. "v1.2.0"
+    to_ref: str  # the release whose behaviour the hidden tests check
+    prs: list[PRInfo] = Field(default_factory=list)  # oldest first, as they merged
+    direct_commits: list[str] = Field(default_factory=list)  # source commits with no PR number
+    milestones: list[Milestone] = Field(default_factory=list)
+    dropped_regressions: list[str] = Field(default_factory=list)  # excluded from grading, see lht.py
+    gold_lines: int = 0  # + and - lines in the source diff, the honest size of the job
+
+
 class HarnessTask(BaseModel):
     format: str = "gauntlet.harness.task/v1"
-    instance_id: str  # owner__name-<pr number>
+    category: Category = "swe"  # swe: one PR. lht: a release range, see lht.py
+    instance_id: str  # owner__name-<pr number>, or owner__name-<from>_to_<to> for lht
     repo: str  # clone URL
     pr: PRInfo
     base_commit: str
@@ -87,6 +117,7 @@ class HarnessTask(BaseModel):
     flaky: list[str] = Field(default_factory=list)  # dropped from grading
     rubric: list[RubricItem] = Field(default_factory=list)
     validation: dict[str, Any] = Field(default_factory=dict)
+    horizon: Horizon | None = None  # set exactly when category == "lht"
     created_at: float = Field(default_factory=time.time)
 
     @property
@@ -131,6 +162,7 @@ class GradeResult(BaseModel):
     passed: dict[str, dict[str, bool]] = Field(default_factory=dict)  # kind -> test id -> passed
     resolved: bool = False
     tampered: list[str] = Field(default_factory=list)  # canary or integrity failures; never resolved
+    milestones: dict[str, float] = Field(default_factory=dict)  # lht only: milestone id -> target pass rate
     error: str | None = None
 
     def rate(self, kind: str) -> float | None:
@@ -139,6 +171,15 @@ class GradeResult(BaseModel):
 
     def rates(self) -> dict[str, float | None]:
         return {k: self.rate(k) for k in ALL_KINDS}
+
+    @property
+    def milestone_rate(self) -> float | None:
+        """Mean over milestones, so a PR with 300 parametrized tests can't outweigh ten small ones."""
+        return sum(self.milestones.values()) / len(self.milestones) if self.milestones else None
+
+    @property
+    def milestones_done(self) -> int:
+        return sum(1 for v in self.milestones.values() if v == 1.0)
 
     @property
     def target_rate(self) -> float:
@@ -192,6 +233,7 @@ class EpisodeResult(BaseModel):
     format: str = "gauntlet.harness.episode/v1"
     episode_id: str
     instance_id: str
+    category: Category = "swe"
     policy: str  # e.g. "claude:claude-opus-5-5", "oracle"
     attempt: int = 0
     steps: int = 0

@@ -4,6 +4,10 @@ pass@k uses the unbiased estimator from Chen et al. (2021): per task, with n att
 resolved, pass@k = 1 - C(n - c, k) / C(n, k), averaged over tasks. A resolved episode only
 counts when Cheat Catcher didn't call it cheating.
 
+SWE and LHT results are never pooled. A resolved rate over one-PR tasks and one over release
+ranges measure different things, and averaging them gives a number that means neither, so a
+results file with both gets one table per category.
+
 With a cutoff date, every metric is also split into tasks merged before and after it, the
 SWE-rebench way of spotting contamination: a model that does much better on older PRs has
 probably seen them.
@@ -77,6 +81,9 @@ def _block(results: list[EpisodeResult]) -> dict[str, Any]:
     }
     for kind in ALL_KINDS:
         out[f"{kind}_rate"] = _avg([g.rate(kind) for g in grades])
+    if any(g.milestones for g in grades):
+        out["milestone_rate"] = _avg([g.milestone_rate for g in grades])
+        out["milestones_done"] = _avg([float(g.milestones_done) for g in grades if g.milestones])
     attempts = max((r.attempt + 1 for r in results), default=1)
     for k in (2, 5):
         if attempts >= k:
@@ -102,6 +109,25 @@ def _merged(r: EpisodeResult) -> date | None:
 
 
 def summarize(results: list[EpisodeResult], *, cutoff: date | None = None) -> dict[str, Any]:
+    by_category: dict[str, list[EpisodeResult]] = defaultdict(list)
+    for r in results:
+        by_category[r.category].append(r)
+    if len(by_category) <= 1:
+        return {"category": next(iter(by_category), "swe"), **_summarize_one(results, cutoff=cutoff)}
+    return {
+        "category": "mixed",
+        "cutoff": cutoff.isoformat() if cutoff else None,
+        "policies": [],
+        "comparisons": [],
+        "categories": {
+            cat: {"category": cat, **_summarize_one(by_category[cat], cutoff=cutoff)}
+            for cat in sorted(by_category, key=lambda c: (c != "swe", c))
+        },
+        "provenance_warnings": [],  # each category carries its own
+    }
+
+
+def _summarize_one(results: list[EpisodeResult], *, cutoff: date | None = None) -> dict[str, Any]:
     by_policy: dict[str, list[EpisodeResult]] = defaultdict(list)
     for r in results:
         by_policy[r.policy].append(r)
@@ -200,13 +226,40 @@ COLUMNS = [
 ]
 
 
+# LHT trades the per-kind rates for milestone progress, which is what moves on a release range
+LHT_COLUMNS = [
+    ("policy", "Policy"),
+    ("resolved_rate", "Resolved"),
+    ("milestone_rate", "Milestones"),
+    ("milestones_done", "Done / task"),
+    ("p2p_rate", "P2P"),
+    ("mean_rubric", "Rubric"),
+    ("mean_reward", "Reward"),
+    ("cheating_rate", "Cheating"),
+    ("mean_steps", "Steps"),
+    ("episodes", "Episodes"),
+]
+
+TITLES = {"swe": "SWE: single-PR tasks", "lht": "LHT: long-horizon release ranges"}
+
+
+def _columns(summary: dict[str, Any]) -> list[tuple[str, str]]:
+    return LHT_COLUMNS if summary.get("category") == "lht" else COLUMNS
+
+
 def render_markdown(summary: dict[str, Any]) -> str:
+    if summary.get("categories"):
+        parts = []
+        for cat, sub in summary["categories"].items():
+            parts += [f"## {TITLES.get(cat, cat)}", "", render_markdown(sub)]
+        return "\n".join(parts)
+    columns = _columns(summary)
     lines = [
-        "| " + " | ".join(h for _, h in COLUMNS) + " |",
-        "|" + "---|" * len(COLUMNS),
+        "| " + " | ".join(h for _, h in columns) + " |",
+        "|" + "---|" * len(columns),
     ]
     for row in summary["policies"]:
-        lines.append("| " + " | ".join(_fmt(row.get(k)) for k, _ in COLUMNS) + " |")
+        lines.append("| " + " | ".join(_fmt(row.get(k)) for k, _ in columns) + " |")
     if summary.get("cutoff"):
         lines += ["", f"Resolved rate before / after {summary['cutoff']} (contamination check):", ""]
         for row in summary["policies"]:
@@ -249,15 +302,27 @@ def render_markdown(summary: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def render_html(summary: dict[str, Any], title: str = "Gauntlet harness results") -> str:
-    head = "".join(f"<th>{html.escape(h)}</th>" for _, h in COLUMNS)
+def _html_table(summary: dict[str, Any]) -> str:
+    columns = _columns(summary)
+    head = "".join(f"<th>{html.escape(h)}</th>" for _, h in columns)
     rows = "".join(
-        "<tr>" + "".join(f"<td>{html.escape(_fmt(row.get(k)))}</td>" for k, _ in COLUMNS) + "</tr>"
+        "<tr>" + "".join(f"<td>{html.escape(_fmt(row.get(k)))}</td>" for k, _ in columns) + "</tr>"
         for row in summary["policies"]
     )
+    return f"<table><tr>{head}</tr>{rows}</table>"
+
+
+def render_html(summary: dict[str, Any], title: str = "Gauntlet harness results") -> str:
+    if summary.get("categories"):
+        tables = "".join(
+            f"<h2>{html.escape(TITLES.get(cat, cat))}</h2>{_html_table(sub)}"
+            for cat, sub in summary["categories"].items()
+        )
+    else:
+        tables = _html_table(summary)
     return f"""<!doctype html><html><head><meta charset="utf-8"><title>{html.escape(title)}</title>
 <style>body{{font:15px system-ui;margin:32px;background:#0d0f13;color:#e8ebf1}}table{{border-collapse:collapse}}
 th,td{{padding:8px 14px;border-bottom:1px solid #2a2f3a;text-align:left}}th{{color:#98a1b2;font-size:12px;text-transform:uppercase}}
 @media (prefers-color-scheme: light){{body{{background:#f6f7f9;color:#16181d}}th,td{{border-color:#dde1e7}}}}</style></head>
-<body><h1>{html.escape(title)}</h1><table><tr>{head}</tr>{rows}</table>
+<body><h1>{html.escape(title)}</h1>{tables}
 <pre>{html.escape(render_markdown(summary))}</pre></body></html>"""

@@ -5,6 +5,8 @@
     otherwise:
         tests      = 1.0 if resolved
                      else target_rate * p2p_rate   (partial credit, if enabled; else 0)
+                     lht: milestone_rate * p2p_rate instead, the mean pass rate over
+                     milestones, so each PR in the release range counts the same
         rubric     = RubricScore.score             (Rubrics as Rewards, Gunjal et al. 2025)
         similarity = SequenceMatcher(candidate, gold) on source diffs (SWE-RL, Wei et al. 2025)
         reward     = w_tests * tests + w_rubric * rubric + w_similarity * similarity
@@ -36,6 +38,7 @@ class RewardConfig(BaseModel):
     cheat_penalty: float = -1.0
     malformed_penalty: float = -1.0
     unsolved_reward: float | None = 0.0  # ceiling when no target test passes; None turns the cap off
+    milestone_credit: bool = False  # lht: partial credit is the mean over milestones, not over tests
 
 
 def compute_reward(
@@ -64,7 +67,11 @@ def compute_reward(
             tests = 1.0
         elif cfg.partial_credit:
             p2p = grade.rate("p2p")
-            tests = grade.target_rate * (1.0 if p2p is None else p2p)
+            progress = grade.target_rate
+            if cfg.milestone_credit and grade.milestone_rate is not None:
+                progress = grade.milestone_rate
+                breakdown["milestones_done"] = float(grade.milestones_done)
+            tests = progress * (1.0 if p2p is None else p2p)
         else:
             tests = 0.0
     else:

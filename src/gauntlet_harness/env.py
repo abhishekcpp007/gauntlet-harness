@@ -36,6 +36,7 @@ from gauntlet_repo2env import extract_patch
 from gauntlet_sandbox import Sandbox, Trajectory
 
 from .grading import grade_patch
+from .profiles import profile_for
 from .reward import RewardConfig, compute_reward
 from .rubric import default_rubric, score_rubric
 from .sandboxing import boot
@@ -55,6 +56,20 @@ The project and pytest are installed. There's no network. Hidden tests will grad
 after you submit, and a separate checker flags edits to tests or the test runner, so fix the \
 real behavior."""
 
+LHT_INSTRUCTIONS = """\
+You're working in a checkout of {repo} at {workdir}, at release {from_ref}. Your job is to bring \
+it up to release {to_ref}: every change listed below shipped between the two.
+
+<task>
+{statement}
+</task>
+
+This is a long task with a budget of {max_steps} actions, so plan before you edit and work \
+through the list in an order that keeps the existing tests passing. Hidden tests grade each \
+item on its own, so finishing some items is worth more than half-finishing all of them. The \
+project and pytest are installed. There's no network, and a separate checker flags edits to \
+tests or the test runner, so fix the real behavior."""
+
 
 class ActionError(Exception):
     pass
@@ -65,8 +80,8 @@ class SWEEnv:
         self,
         task: HarnessTask,
         *,
-        max_steps: int = 60,
-        command_timeout: float = 120,
+        max_steps: int | None = None,  # None takes the task category's profile
+        command_timeout: float | None = None,
         trajectory_path: str | Path | None = None,
         cache_dir: Path | None = None,
         reward_config: RewardConfig | None = None,
@@ -75,11 +90,12 @@ class SWEEnv:
         grade_fn: Callable[[HarnessTask, str], GradeResult] | None = None,
     ) -> None:
         self.task = task
-        self.max_steps = max_steps
-        self.command_timeout = command_timeout
+        profile = profile_for(task)
+        self.max_steps = max_steps or profile.max_steps
+        self.command_timeout = command_timeout or profile.command_timeout
         self.trajectory_path = Path(trajectory_path) if trajectory_path else None
         self.cache_dir = cache_dir
-        self.reward_config = reward_config or RewardConfig()
+        self.reward_config = reward_config or profile.reward
         self.judge_client = judge_client
         self.judge_model = judge_model
         self._grade = grade_fn or (lambda t, p: grade_patch(t, p, cache_dir=cache_dir))
@@ -108,13 +124,24 @@ class SWEEnv:
         self._agent_start = len(self.sb.trajectory) if self.sb.trajectory else 0
         self.steps, self.actions, self.observations, self.result = 0, [], [], None
         self._started = time.time()
-        obs = INSTRUCTIONS.format(
-            repo=self.task.pr.repo,
-            workdir=self.task.workdir,
-            statement=self.task.problem_statement.strip(),
-        )
+        if self.task.horizon is not None:
+            obs = LHT_INSTRUCTIONS.format(
+                repo=self.task.pr.repo,
+                workdir=self.task.workdir,
+                from_ref=self.task.horizon.from_ref,
+                to_ref=self.task.horizon.to_ref,
+                max_steps=self.max_steps,
+                statement=self.task.problem_statement.strip(),
+            )
+        else:
+            obs = INSTRUCTIONS.format(
+                repo=self.task.pr.repo,
+                workdir=self.task.workdir,
+                statement=self.task.problem_statement.strip(),
+            )
         info = {
             "instance_id": self.task.instance_id,
+            "category": self.task.category,
             "workdir": self.task.workdir,
             "max_steps": self.max_steps,
         }
@@ -277,6 +304,7 @@ class SWEEnv:
         self.result = EpisodeResult(
             episode_id=uuid.uuid4().hex[:12],
             instance_id=task.instance_id,
+            category=task.category,
             policy="",
             steps=self.steps,
             seconds=round(time.time() - self._started, 2),

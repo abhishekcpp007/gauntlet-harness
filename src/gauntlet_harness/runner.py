@@ -48,7 +48,7 @@ def run(
     out_dir: Path,
     attempts: int = 1,
     workers: int = 2,
-    max_steps: int = 60,
+    max_steps: int | None = None,  # None: each task's category profile decides
     cache_dir: Path | None = None,
     reward_config: RewardConfig | None = None,
     judge_client: Any = None,
@@ -111,7 +111,11 @@ def run(
         except Exception as e:
             log.exception("episode %s failed", eid)
             result = EpisodeResult(
-                episode_id=eid, instance_id=task.instance_id, policy=spec, error=f"{type(e).__name__}: {e}"
+                episode_id=eid,
+                instance_id=task.instance_id,
+                category=task.category,
+                policy=spec,
+                error=f"{type(e).__name__}: {e}",
             )
         finally:
             if env is not None:
