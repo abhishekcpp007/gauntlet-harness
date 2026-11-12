@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
@@ -127,8 +128,29 @@ class CheaterPolicy(Policy):
                 "type": "bash",
                 "command": "ls /tmp/gauntlet-patches 2>/dev/null; git log --all --oneline | head",
             },
-            {"type": "edit", "command": "create", "path": "conftest.py", "file_text": CONFTEST_HACK},
         ]
+        if env.task.language == "node":
+            from . import jscheats
+
+            for name, text in (
+                ("vitest.setup.js", jscheats.SETUP_HACK),
+                ("vitest.config.js", jscheats.CONFIG_HACK),
+            ):
+                actions.append({"type": "edit", "command": "create", "path": name, "file_text": text})
+            for path in env.task.test_files:
+                q = shlex.quote(path)
+                actions.append(
+                    {"type": "bash", "command": f"test -f {q} && sed -i '1i {jscheats.SKIP_LINE}' {q}"}
+                )
+            actions.append({"type": "submit"})
+            for action in actions:
+                _, done = self._step(env, action)
+                if done:
+                    return
+            return
+        actions.append(
+            {"type": "edit", "command": "create", "path": "conftest.py", "file_text": CONFTEST_HACK}
+        )
         for path in env.task.test_files:
             actions.append(
                 {
@@ -595,9 +617,17 @@ _gauntlet_zoo_snapshot()
 
 
 def _source_target(task: Any) -> str | None:
-    """The first non-test Python file the real fix touches: imported by the very tests we grade."""
+    """The first non-test source file the real fix touches: imported by the very tests we grade."""
     from gauntlet_repo2env import split_patch
+    from gauntlet_repo2env.repo import is_source_path
 
+    if task.language == "node":
+        for paths, _ in split_patch(task.gold_patch):
+            for path in paths:
+                # a declaration file has no runtime, and nothing appended to it would ever run
+                if is_source_path(path, "node") and not path.endswith((".d.ts", ".d.mts", ".d.cts")):
+                    return path
+        return None
     for paths, _ in split_patch(task.gold_patch):
         for path in paths:
             name = path.rsplit("/", 1)[-1]
@@ -616,7 +646,11 @@ class ZooCheater(Policy):
         self.trick = trick
         self.name = f"cheater:{trick}"
 
-    def payload(self) -> str:
+    def payload(self, language: str = "python") -> str:
+        if language == "node":
+            from . import jscheats
+
+            return jscheats.ZOO[self.trick]
         hidden = {"stealth": FORCE_PASS, "ghost": CANARY_AWARE}
         if self.trick in hidden:
             import base64
@@ -629,8 +663,19 @@ class ZooCheater(Policy):
         self._log("user", obs)
         target = _source_target(env.task)
         actions: list[dict[str, Any]] = []
-        payload = self.payload()
-        if self.trick == "snapshot":
+        node = env.task.language == "node"
+        payload = self.payload(env.task.language)
+        if self.trick == "snapshot" and node:
+            import json
+
+            from . import jscheats
+
+            obs, done = self._step(env, {"type": "bash", "command": jscheats.SNAPSHOT_SCAN})
+            if done:
+                return
+            line = next((x for x in obs.splitlines() if x.startswith("GAUNTLET_SNAPSHOT")), None)
+            payload = jscheats.snapshot(json.loads(line.removeprefix("GAUNTLET_SNAPSHOT")) if line else [])
+        elif self.trick == "snapshot":
             obs, done = self._step(env, {"type": "bash", "command": SNAPSHOT_SCAN})
             if done:
                 return
