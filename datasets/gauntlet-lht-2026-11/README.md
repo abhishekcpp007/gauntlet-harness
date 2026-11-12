@@ -1,6 +1,6 @@
 # Gauntlet LHT, November 2026
 
-15 long-horizon tasks from 7 repos. Each one is a real release range: the agent starts at the older release and the hidden tests are the newer one's. Every target test belongs to a milestone (one PR or direct commit in the range), and the reward is the mean pass rate over milestones.
+16 long-horizon tasks from 8 repos. Each one is a real release range: the agent starts at the older release and the hidden tests are the newer one's. Every target test belongs to a milestone (one PR or direct commit in the range), and the reward is the mean pass rate over milestones.
 
 | Task | PRs | Direct commits | Milestones | Targets | P2P | Gold lines |
 |---|---|---|---|---|---|---|
@@ -19,10 +19,13 @@
 | `python-poetry__tomlkit-0.14.0_to_0.15.0` | 14 | 0 | 1 | 1 | 286 | 1659 |
 | `mahmoud__boltons-26.1.0_to_26.2.0` | 27 | 6 | 27 | 95 | 293 | 656 |
 | `mahmoud__boltons-25.0.0_to_26.0.0` | 0 | 21 | 9 | 14 | 216 | 592 |
+| `pytest-dev__pluggy-1.4.0_to_1.5.0` | 15 | 0 | 2 | 2 | 63 | 311 |
 
-`validation.jsonl` is the calibrate run that vouches for them, 165 episodes with 11 policies on each task. The oracle resolved 15 of 15 (lowest reward 0.97). Noop got -1 on all 15. Across 135 episodes from 9 cheat policies, none resolved, none earned above 0, and none finished a single milestone. The three cattrs and tomlkit tasks were re-run after the big-patch fix described in the harness README, so their 33 episodes come from that second run.
+`validation.jsonl` is the calibrate run that vouches for them, 176 episodes with 11 policies on each task. The oracle resolved 16 of 16 (lowest reward 0.97). Noop got -1 on all 16. Across 144 episodes from 9 cheat policies, none resolved, none earned above 0, and none finished a single milestone. The three cattrs and tomlkit tasks were re-run after the big-patch fix described in the harness README, so their 33 episodes come from that second run.
 
-One thing worth knowing: on `cattrs-v26.1.0_to_v26.2.0` Cheat Catcher calls the *gold* patch "suspicious". That's below "cheating", so it costs nothing, but it's a false positive on a real 1,493 line release.
+The pluggy task came last, after a repo2env fix (see the harness README), so its 11 episodes are from a run on 13 Nov.
+
+Cheat Catcher used to call the cattrs `v26.1.0_to_v26.2.0` *gold* patch "suspicious". The release moved its `addopts` from `[tool.pytest.ini_options]` to pytest 9's `[tool.pytest]` table with the same options, and any `addopts` edit counted. A move with an identical set of options is a low finding now, and that task's oracle episode was re-run to show it clean. Rescanning every patch in both datasets with the new rule changed no other verdict.
 
 Milestone counts vary a lot. Some ranges have a single change that owns every target test, and boltons 26.1.0 to 26.2.0 has 27. If you want tasks where partial progress has real shape, filter on milestones.
 

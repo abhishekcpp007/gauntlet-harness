@@ -47,17 +47,18 @@ gauntlet build-lht --repo tkem/cachetools --range v7.2.5..v7.2.6 -o lht.jsonl
 gauntlet run       --tasks lht.jsonl --category lht --policies oracle,noop,cheater
 ```
 
-**Real ranges, 12 Nov 2026.** 15 tasks from 7 repos are in [`datasets/gauntlet-lht-2026-11`](datasets/gauntlet-lht-2026-11). Calibrate on all of them: 165 episodes, 0 violations. The oracle resolved 15 of 15, and 135 episodes from 9 cheat policies earned nothing above 0 and finished no milestone.
+**Real ranges, 12 Nov 2026.** 16 tasks from 8 repos are in [`datasets/gauntlet-lht-2026-11`](datasets/gauntlet-lht-2026-11). Calibrate on all of them: 176 episodes, 0 violations. The oracle resolved 16 of 16, and 144 episodes from 9 cheat policies earned nothing above 0 and finished no milestone.
 
-Running on real releases found five things a fake repo never would:
+Running on real releases found six things a fake repo never would:
 
 - **A leak only a release range has.** On tomli `2.4.1..2.5.0` the leak check caught `flit_core`, tomli's own build backend, vendoring a copy of the *newer* tomli into site-packages. The agent could have read the answer. A release range hits this whenever the target release ships somewhere else first. Rejected.
 - **Maintainers who never open PRs.** cachetools and older boltons releases are all direct commits, so the first version rejected them as "no PRs". Direct commits are milestones now, and `cachetools v7.2.5..v7.2.6` and `boltons 25.0.0..26.0.0` exist because of it.
 - **A collection crash posing as 388 targets.** On boltons `26.1.0..26.2.0` the release's test changes broke collection, so every test read NONE in the test run, and 314 tests that already passed at the older release counted as new targets. One import fix would have earned most of the release. A test that passed at the base and has the same AST at both releases now goes to P2P. That task went from 388 targets to 95, and its `unattributed` bucket from 231 tests to 8.
 - **Patches too big for the pipe.** Release-range gold patches run 140 to 270 KB. `extract_patch` read the diff from capped exec output and the oracle sent it as one shell argument, past Linux's 128 KB limit. Both broke silently on cattrs and tomlkit: the oracle submitted nothing and got -1. The patch goes through a file now and the oracle writes it in pieces.
 - **A repo that never ran.** tablib's `pytest.ini` adds `--cov`, and `pytest-cov` lives in `tests/requirements.txt`, which repo2env didn't read. pytest stopped before writing a report, so tablib gave no tasks in either category. It gives 4 LHT tasks now.
+- **A test runner that depends on the repo.** repo2env stamps a setuptools-scm project as `0.0.0`, since `git archive` drops `.git`. pytest needs `pluggy>=1.5`, so for pluggy itself pip walked back to a pytest from 2017 that still does `import imp` and dies on Python 3.12. pluggy `1.4.0..1.5.0` came back with no results at all. pytest's own deps now get the nearest release tag at or before the commit, and that env gets pluggy 1.4.0 from the repo next to pytest 8.1.2. No other project's env changes. The 5 pluggy SWE tasks in Gauntlet Live were rebuilt on the new images with the same tests in every bucket.
 
-Still rejected for honest reasons: tomli `2.3.0..2.4.0` (the gold fix doesn't pass in an env built at the older release, which is dependency drift caught by measuring), tomlkit `0.13.3..0.14.0` and tomli `2.2.1..2.3.0` (no test moves to passing), and pluggy `1.4.0..1.5.0`, which gives no test results and hasn't been looked into yet.
+Still rejected for honest reasons: tomli `2.3.0..2.4.0` (the gold fix doesn't pass in an env built at the older release, which is dependency drift caught by measuring), tomlkit `0.13.3..0.14.0` and tomli `2.2.1..2.3.0` (no test moves to passing).
 
 Everything else is shared: the sandbox, the canary, the test-renaming disguise, Cheat Catcher, and the leak checks. An LHT task is graded by the same `grade_patch`, so the anti-cheat work above applies to it unchanged. The design notes are in [`DESIGN.md`](DESIGN.md#two-task-categories).
 

@@ -257,7 +257,7 @@ wheels = [
 [[package]]
 name = "gauntlet-cheatcatcher"
 version = "0.1.0"
-source = { git = "https://github.com/abhishekcpp007/gauntlet-cheatcatcher#190a12d97885432c9eb479f425c6ba28cf6ce4f0" }
+source = { git = "https://github.com/abhishekcpp007/gauntlet-cheatcatcher#69bd7c91d9eecd53a0c802d3c2588dbd6711c79f" }
 dependencies = [
     { name = "gauntlet-sandbox" },
     { name = "pydantic" },
@@ -328,7 +328,7 @@ dev = [
 [[package]]
 name = "gauntlet-repo2env"
 version = "0.1.0"
-source = { git = "https://github.com/abhishekcpp007/gauntlet-repo2env#ce10afa5b2db914d9ec519dc1fc20e4f3aa10d4d" }
+source = { git = "https://github.com/abhishekcpp007/gauntlet-repo2env#6f3df8b0578a64e3995e22497e8989d38b45e0f6" }
 dependencies = [
     { name = "gauntlet-sandbox" },
     { name = "pydantic" },
