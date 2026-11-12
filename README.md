@@ -47,13 +47,17 @@ gauntlet build-lht --repo tkem/cachetools --range v7.2.5..v7.2.6 -o lht.jsonl
 gauntlet run       --tasks lht.jsonl --category lht --policies oracle,noop,cheater
 ```
 
-**First run on real ranges, 12 Nov 2026.** I pointed it at 8 ranges across 4 repos. 3 became tasks: prettytable `3.15.1..3.16.0` and two cachetools ranges. One of those, cachetools `v7.2.5..v7.2.6`, has no PRs at all, since that maintainer pushes straight to master. Direct commits count as milestones for exactly this reason. Calibrate on the three gave 33 episodes and 0 violations: the oracle resolved 3 of 3 (reward 0.97 to 1.0), noop got -1, and none of the 11 cheats earned above 0 or finished a single milestone.
+**Real ranges, 12 Nov 2026.** 15 tasks from 7 repos are in [`datasets/gauntlet-lht-2026-11`](datasets/gauntlet-lht-2026-11). Calibrate on all of them: 165 episodes, 0 violations. The oracle resolved 15 of 15, and 135 episodes from 9 cheat policies earned nothing above 0 and finished no milestone.
 
-The 5 rejections were the useful part:
+Running on real releases found five things a fake repo never would:
 
-- tomli `2.4.1..2.5.0` failed the leak check, and rightly so. `flit_core`, tomli's own build backend, vendors a copy of the *newer* tomli into site-packages, so the agent could have read the answer. A single-PR task rarely hits this. A release range hits it whenever the target release ships somewhere else first.
-- tomli `2.3.0..2.4.0` failed validation because the gold fix doesn't pass in an env built at the older release. That's the dependency drift case, caught by measuring instead of assuming.
-- Both tablib ranges and tomli `2.2.1..2.3.0` gave no task for reasons that aren't LHT's. tablib's `pytest.ini` adds `--cov` and the env lacks `pytest-cov`, which also explains why tablib has no SWE tasks in the live set. That one's still open.
+- **A leak only a release range has.** On tomli `2.4.1..2.5.0` the leak check caught `flit_core`, tomli's own build backend, vendoring a copy of the *newer* tomli into site-packages. The agent could have read the answer. A release range hits this whenever the target release ships somewhere else first. Rejected.
+- **Maintainers who never open PRs.** cachetools and older boltons releases are all direct commits, so the first version rejected them as "no PRs". Direct commits are milestones now, and `cachetools v7.2.5..v7.2.6` and `boltons 25.0.0..26.0.0` exist because of it.
+- **A collection crash posing as 388 targets.** On boltons `26.1.0..26.2.0` the release's test changes broke collection, so every test read NONE in the test run, and 314 tests that already passed at the older release counted as new targets. One import fix would have earned most of the release. A test that passed at the base and has the same AST at both releases now goes to P2P. That task went from 388 targets to 95, and its `unattributed` bucket from 231 tests to 8.
+- **Patches too big for the pipe.** Release-range gold patches run 140 to 270 KB. `extract_patch` read the diff from capped exec output and the oracle sent it as one shell argument, past Linux's 128 KB limit. Both broke silently on cattrs and tomlkit: the oracle submitted nothing and got -1. The patch goes through a file now and the oracle writes it in pieces.
+- **A repo that never ran.** tablib's `pytest.ini` adds `--cov`, and `pytest-cov` lives in `tests/requirements.txt`, which repo2env didn't read. pytest stopped before writing a report, so tablib gave no tasks in either category. It gives 4 LHT tasks now.
+
+Still rejected for honest reasons: tomli `2.3.0..2.4.0` (the gold fix doesn't pass in an env built at the older release, which is dependency drift caught by measuring), tomlkit `0.13.3..0.14.0` and tomli `2.2.1..2.3.0` (no test moves to passing), and pluggy `1.4.0..1.5.0`, which gives no test results and hasn't been looked into yet.
 
 Everything else is shared: the sandbox, the canary, the test-renaming disguise, Cheat Catcher, and the leak checks. An LHT task is graded by the same `grade_patch`, so the anti-cheat work above applies to it unchanged. The design notes are in [`DESIGN.md`](DESIGN.md#two-task-categories).
 
