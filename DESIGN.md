@@ -242,12 +242,60 @@ describe block that parses fine. Giving up on the file left that task's targets 
 names. A statement with an error in it is skipped, a describe block is still entered, and a
 block that holds an unreadable statement takes no canary.
 
+### jest
+
+jest shares the parser, the canary and the disguise with vitest, because a jest test file is the
+same `describe` and `it` calls. Three things are its own.
+
+**The report.** jest has no JUnit reporter built in and `jest-junit` is a package most repos
+don't have, so the suite runs with `--json`. Ids are built in vitest's shape,
+`path::outer > inner > title`, and a file that fails to load is one failed entry under its own
+name. Everything downstream reads one kind of id.
+
+**Snapshots.** jest keys a snapshot by the describe titles joined with a space, and puts a hint
+after a colon (``exports[`calc div formats a quotient: as text 1`]``). The disguise renames those
+keys with the test, or `--ci` fails the renamed test for a snapshot it can't find.
+
+**The ES module flag.** The first version set `NODE_OPTIONS=--experimental-vm-modules` on every
+run, on the theory that it changes nothing for CommonJS. It does. luxon is `"type": "module"` and
+has babel compile its files, and with the flag on jest loaded them as ES modules: all 58 test
+files failed with "Must use import to load ES Module" and 6 PRs were rejected for having no test
+that moves. The flag is now set only when the repo's own scripts set it. Those 6 PRs are 6 tasks.
+
+Six real repos, 57 merged PRs, and what each one showed:
+
+| Repo | What happened |
+|---|---|
+| moment/luxon | 6 tasks after the flag fix, every target renamable |
+| iamkun/dayjs | 2 tasks, and they are one fix: the repo merges each PR to `dev` and then `dev` to `master` |
+| jest-community/eslint-plugin-jest | refused now, see below |
+| immutable-js/immutable-js | 0 tasks: its tests import `dist/immutable.js`, a build the env never runs |
+| tj/commander.js | refused: it left jest for node's own test runner |
+| vercel/ms | no merged PR in the window |
+
+**A run with no report is not a run where every test is new.** eslint-plugin-jest #2036 came out
+as a task with 4,194 new tests and no regression guard. Its `test` run had left no report, so
+against the fix run every test looked like it had appeared. A build is now rejected when the
+base run reports tests and a later run reports nothing.
+
+**A second runner gets graded as tests.** The same repo runs ESLint through `jest-runner-eslint`,
+so each file reports a test called "ESLint". Lint becomes a regression test, and the canary the
+grader plants is itself a lint failure. The real fix for #2039 passed all 8 target tests and
+didn't resolve. A repo with a `jest-runner-*` package is refused. Its tests were a poor fit
+anyway: they come out of `RuleTester.run(...)`, so the disguise could rename 0 of 5 targets on
+one task and 25 of 4,194 on another.
+
+On the 8 real tasks that were graded (6 luxon, 1 dayjs, 1 eslint-plugin-jest) the oracle resolved
+7 and noop resolved none. The miss is the lint case above.
+
+**What jest does not have is a red team.** The cheats in `jscheats.py` are written against
+vitest's internals. On jest they fail to load, which proves nothing, so they aren't run and no
+jest task set is published yet. The defences are the same code, and
+`tests/test_jest_pipeline.py` holds the honest half: the real fix resolves under three seeds of
+canaries and new names, and a patch that ships its own `node_modules/jest` is stripped.
+
 ### Still open
 
-- **jest.** The parser, the canary and the disguise don't care which runner reports. What's
-  missing is the id shape (jest-junit needs `ancestorSeparator` and a title template set to
-  match), the suite command, and a force-pass payload written against jest's `expect`. Refused
-  with a reason until then.
 - **Two cheats are duds on newer vitest.** `cheater:monkeypatch` and `cheater:stealth` swap test
   bodies through `vitest/suite`, and newer vitest no longer exports it. On 26 of the 69
   published tasks the payload fails to load and scores a quiet 0, so the calibration says
@@ -259,7 +307,11 @@ block that holds an unreadable statement takes no canary.
   the published set, and there is no automatic check for it yet.
 - **Workspaces.** Sibling packages resolve through symlinks the package manager writes into
   `node_modules`, and moving that folder up breaks them. Refused with a reason.
-- **Projects whose tests import a build.** The env runs the install and nothing else.
+- **Projects whose tests import a build.** The env runs the install and nothing else. immutable-js is one:
+  52 of its 56 test files fail on a missing `dist/immutable.js`, and its PRs are rejected for
+  having no test that moves, which is true but not the useful reason.
+- **Duplicate merges.** dayjs gives two tasks for one fix. Nothing compares gold patches
+  across tasks yet.
 - **Cheat Catcher's static rules are Python.** On a JS patch it finds nothing, so the JS side
   stands on the grading-time defences alone: strip, canary, disguise, hash. Those are the ones
   that held when static analysis didn't, but it is one layer fewer.

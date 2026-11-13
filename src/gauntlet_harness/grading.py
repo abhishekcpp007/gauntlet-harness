@@ -18,7 +18,7 @@ from collections import Counter
 from gauntlet_repo2env import split_patch, strip_test_changes
 
 from . import jstests
-from .runners import PYTEST, runner_for
+from .runners import JS_RUNNERS, PYTEST, runner_for
 from .sandboxing import boot
 from .schema import ALL_KINDS, TARGET_KINDS, GradeResult, HarnessTask, Status
 from .testing import PatchFailed, apply_patch, run_suite
@@ -138,7 +138,7 @@ class Canary:
 
         The same idea for vitest, where the container is a describe block: see jstests.py.
         """
-        if self.runner == "vitest":
+        if self.runner in JS_RUNNERS:
             out, self.fail_ids, self.pass_ids = jstests.plant_canaries(
                 current, self.path, self.graded, self.rng, self.count
             )
@@ -283,7 +283,7 @@ class Disguise:
         self.by_file: dict[str, set[tuple[str | None, str]]] = {}
         self.back: dict[str, str] = {}  # renamed id (no params) -> real id
         self.rules: list[tuple[str, str]] = []  # vitest only: (regex, ending) for it.each titles
-        if self.runner == "vitest":
+        if self.runner in JS_RUNNERS:
             # the whole id is kept: a vitest title is free text and isn't split into parts here
             for test in (t for k in TARGET_KINDS for t in getattr(task, k)):
                 self.by_file.setdefault(test.split("::", 1)[0], set()).add((None, test))
@@ -295,7 +295,7 @@ class Disguise:
                 self.by_file.setdefault(path, set()).add((cls, name))
 
     def rename(self, source: str, path: str) -> str:
-        if self.runner == "vitest":
+        if self.runner in JS_RUNNERS:
             targets = sorted(t for _, t in self.by_file.get(path, ()))
             out, back, rules = jstests.rename_targets(source, path, targets, self.rng)
             self.back.update(back)
@@ -338,7 +338,7 @@ class Disguise:
             renamed = self.rename(current, path)
             if renamed != current:
                 sb.write_file(full, renamed)
-                if self.runner == "vitest":
+                if self.runner in JS_RUNNERS:
                     self._rename_snapshots(sb, workdir, path)
 
     def _rename_snapshots(self, sb, workdir: str, path: str) -> None:
@@ -348,12 +348,12 @@ class Disguise:
             current = sb.read_text(snap)
         except (FileNotFoundError, UnicodeDecodeError):
             return
-        renamed = jstests.rename_snapshot_keys(current, path, self.back, self.rules)
+        renamed = jstests.rename_snapshot_keys(current, path, self.back, self.rules, self.runner)
         if renamed != current:
             sb.write_file(snap, renamed)
 
     def restore(self, statuses: dict) -> dict:
-        if self.runner == "vitest":
+        if self.runner in JS_RUNNERS:
             return {jstests.restore_id(t, self.back, self.rules): status for t, status in statuses.items()}
         out = {}
         for test, status in statuses.items():

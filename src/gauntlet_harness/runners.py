@@ -12,7 +12,7 @@ task validated before this file existed is graded by exactly the commands it was
 from __future__ import annotations
 
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True)
@@ -111,7 +111,19 @@ VITEST = Runner(
     cpus=4.0,
 )
 
-RUNNERS: dict[str, Runner] = {r.name: r for r in (PYTEST, VITEST)}
+# jest runs in the same sandbox as vitest: same folders, same reinstall, same room. What differs is
+# the config file it reads, which has to be watched, and the command and report, which live with
+# the other suite commands in repo2env.
+JEST = replace(
+    VITEST,
+    name="jest",
+    label="jest",
+    watched=VITEST.watched + " -o -name 'jest.config.*' -o -name 'jest.setup.*' -o -name 'babel.config.*'",
+)
+
+JS_RUNNERS = frozenset({VITEST.name, JEST.name})
+
+RUNNERS: dict[str, Runner] = {r.name: r for r in (PYTEST, VITEST, JEST)}
 
 
 def runner_for(task) -> Runner:

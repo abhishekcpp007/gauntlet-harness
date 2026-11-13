@@ -126,3 +126,16 @@ def test_truncated_junit_counts_as_no_report():
     from gauntlet_harness.testing import run_suite
 
     assert run_suite(FakeSb(), "/w", None) == {}
+
+
+def test_a_run_that_reports_nothing_is_not_a_run_where_everything_is_new():
+    from gauntlet_harness.testing import lost_report
+
+    base = {"a.test.js::one": "PASSED"}
+    full = {"a.test.js::one": "PASSED", "a.test.js::two": "FAILED"}
+    # eslint-plugin-jest #2036: the run with the PR's tests left no report
+    assert "killed or crashed" in lost_report(base, [{}, full, full])
+    assert "killed or crashed" in lost_report(base, [full, full, {}])
+    assert lost_report(base, [full, full]) is None
+    # a scope of files the PR adds reports nothing at the base commit, and that's fine
+    assert lost_report({}, [full, full]) is None

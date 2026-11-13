@@ -135,17 +135,54 @@ S2P = "test/calc.test.js::calc > has a version marker"
 P2P = ["test/calc.test.js::calc > add > adds two numbers", "test/calc.test.js::exports a function"]
 
 
-def make_js_pr_repo(root: Path) -> tuple[Path, list[PRInfo]]:
+F2P_SNAP = "test/calc.test.js::calc > div > formats a quotient"
+
+# jest: the same tests with the runner's globals in place of the vitest import, and one more
+# target that reads a stored snapshot, which is keyed by the test's name
+JEST_SNAPSHOT_TEST = """\
+
+    it('formats a quotient', () => {
+      expect({ q: calc.div(5, 2) }).toMatchSnapshot()
+    })
+"""
+JEST_SNAP = """\
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`calc div formats a quotient 1`] = `
+{
+  "q": 2.5,
+}
+`;
+"""
+
+
+def _for_jest(text: str) -> str:
+    # the leading semicolon matters: without it the line reads as a call on the block above
+    lines = [line for line in text.splitlines(keepends=True) if "from 'vitest'" not in line]
+    text = "".join(lines).replace("it.skipIf(!calc.VERSION)(", ";(calc.VERSION ? it : it.skip)(")
+    marker = "      expect(calc.div(5, 2)).toBe(2.5)\n    })\n"
+    return text.replace(marker, marker + JEST_SNAPSHOT_TEST)
+
+
+def make_js_pr_repo(root: Path, runner: str = "vitest") -> tuple[Path, list[PRInfo]]:
+    jest = runner == "jest"
+    adapt = _for_jest if jest else (lambda text: text)
+    package = PACKAGE
+    if jest:
+        # an ES module repo with no compile step has to turn jest's module support on itself
+        package = PACKAGE.replace('"vitest": "^3.2.0"', '"jest": "^29.7.0"').replace(
+            '"vitest run"', '"NODE_OPTIONS=--experimental-vm-modules jest"'
+        )
     repo = root / "jscalc"
     repo.mkdir(parents=True)
     _git(repo, "init", "-q", "-b", "main")
     _write(
         repo,
         {
-            "package.json": PACKAGE,
+            "package.json": package,
             ".gitignore": "node_modules/\n",
             "src/calc.js": BASE_CALC,
-            "test/calc.test.js": BASE_TESTS,
+            "test/calc.test.js": adapt(BASE_TESTS),
         },
     )
     _git(repo, "add", "-A")
@@ -153,7 +190,14 @@ def make_js_pr_repo(root: Path) -> tuple[Path, list[PRInfo]]:
 
     # PR 1: a real merge commit from a branch
     _git(repo, "checkout", "-q", "-b", "fix-div")
-    _write(repo, {"src/calc.js": FIXED_CALC, "test/calc.test.js": FIXED_TESTS, "test/mul.test.js": MUL_TESTS})
+    fixed = {
+        "src/calc.js": FIXED_CALC,
+        "test/calc.test.js": adapt(FIXED_TESTS),
+        "test/mul.test.js": adapt(MUL_TESTS),
+    }
+    if jest:
+        fixed["test/__snapshots__/calc.test.js.snap"] = JEST_SNAP
+    _write(repo, fixed)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "Fix div, add mul and VERSION")
     _git(repo, "checkout", "-q", "main")
@@ -176,8 +220,10 @@ def make_js_pr_repo(root: Path) -> tuple[Path, list[PRInfo]]:
             "src/calc.js": FIXED_CALC.replace("return a + b", "return a + b + 1")
             + "\nexport function neg(a) {\n  return -a\n}\n",
             "test/neg.test.js": (
-                "import { expect, it } from 'vitest'\nimport { neg } from '../src/calc.js'\n\n"
-                "it('negates', () => {\n  expect(neg(2)).toBe(-2)\n})\n"
+                adapt(
+                    "import { expect, it } from 'vitest'\nimport { neg } from '../src/calc.js'\n\n"
+                    "it('negates', () => {\n  expect(neg(2)).toBe(-2)\n})\n"
+                )
             ),
         },
     )

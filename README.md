@@ -6,7 +6,7 @@
 ![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-Turn pull requests merged on GitHub *this week* into leak-free RL environments for coding agents, from Python repos tested with pytest and JavaScript or TypeScript repos tested with vitest. Run models in them, record every step, judge each episode on how its tests move (F2P, N2P, S2P, P2P) plus a rubric, and export the episodes as SFT, GRPO or DPO training data.
+Turn pull requests merged on GitHub *this week* into leak-free RL environments for coding agents, from Python repos tested with pytest and JavaScript or TypeScript repos tested with vitest or jest. Run models in them, record every step, judge each episode on how its tests move (F2P, N2P, S2P, P2P) plus a rubric, and export the episodes as SFT, GRPO or DPO training data.
 
 Static benchmarks go stale. Once a fix is on GitHub long enough, it's in somebody's training set, and a high score stops meaning much. This harness keeps making new tasks out of PRs that were merged after a model's cutoff, so the model can't have seen the answer.
 
@@ -128,7 +128,7 @@ Nothing about the grader's design changed for JS: strip the candidate's test edi
 
 The disguise can now rename 339 of 339 target tests. On the first build it was 188 of 227.
 
-**What this set doesn't prove.** `cheater:monkeypatch` and `cheater:stealth` only load on 43 of the 69 tasks. The other 26 are on a newer vitest that no longer exports the module the payload hooks, so the cheat scores a quiet 0 there and the table says nothing about that trick on those repos. The [data card](datasets/gauntlet-live-js-2026-11/README.md) says which zeros are a catch and which are a dud. Also not handled yet: jest, workspaces, and repos whose tests import a build.
+**What this set doesn't prove.** `cheater:monkeypatch` and `cheater:stealth` only load on 43 of the 69 tasks. The other 26 are on a newer vitest that no longer exports the module the payload hooks, so the cheat scores a quiet 0 there and the table says nothing about that trick on those repos. The [data card](datasets/gauntlet-live-js-2026-11/README.md) says which zeros are a catch and which are a dud. Also not handled yet: workspaces, and repos whose tests import a build. jest works but isn't red-teamed, see [DESIGN.md](DESIGN.md#jest).
 
 ## It found its own bugs
 
@@ -476,7 +476,7 @@ The [Live tasks](.github/workflows/live.yml) workflow runs every Monday. It coll
 
 ## Limits
 
-- Two stacks: Python on pytest, and Node on vitest. No jest, no workspaces (monorepos), no repo whose tests import a build. Each is refused with its reason. Go and Rust aren't started. LHT tasks and Cheat Catcher's static rules are Python only. [DESIGN.md](DESIGN.md#the-second-language-javascript-and-typescript-on-vitest) has the list and why.
+- Two stacks: Python on pytest, and Node on vitest or jest. jest builds and grades real tasks (luxon, dayjs) but has no cheater zoo of its own yet, so there's no published jest set. No workspaces (monorepos), no bun, no jest repo with a second runner, each refused with its reason. A repo whose tests import a build gives no tasks. Go and Rust aren't started. LHT tasks and Cheat Catcher's static rules are Python only. [DESIGN.md](DESIGN.md#the-second-language-javascript-and-typescript-on-vitest) has the list and why.
 - Most merged PRs don't make tasks. Dependency bumps and CI changes are most of them, so small, well-tested repos give the most tasks per PR.
 - Commit messages and PR bodies make weaker statements than real issues. 14 of the 53 live tasks have an issue behind them, and the `statement_source` field says which.
 - A huge suite (packaging, 63k tests) falls back to the PR's own test modules, so P2P guards less of the project for those tasks. `validation.scope_fallback` marks them.

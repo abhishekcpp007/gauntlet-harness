@@ -506,7 +506,7 @@ def _graded_titles(file: str, graded: list[str]) -> list[str]:
     return [t.split("::", 1)[1] for t in graded if t.startswith(f"{file}::")]
 
 
-_VITEST_IMPORT = re.compile(r"import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*['\"]vitest['\"]")
+_VITEST_IMPORT = re.compile(r"import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*['\"](?:vitest|@jest/globals)['\"]")
 
 
 def _usable_callee(source: str, calls: list[TestCall], fallback: str | None) -> str:
@@ -693,7 +693,9 @@ def snapshot_path(path: str) -> str:
     return str(p.parent / "__snapshots__" / f"{p.name}.snap")
 
 
-def rename_snapshot_keys(snap: str, path: str, back: dict[str, str], rules: list[tuple[str, str]]) -> str:
+def rename_snapshot_keys(
+    snap: str, path: str, back: dict[str, str], rules: list[tuple[str, str]], runner: str = "vitest"
+) -> str:
     """A .snap file with the keys of renamed tests renamed to match.
 
     vitest stores what `toMatchSnapshot()` saw under the test's full name plus a counter:
@@ -702,9 +704,17 @@ def rename_snapshot_keys(snap: str, path: str, back: dict[str, str], rules: list
     failed its own two target tests while the canary and every other test passed. A hint
     (`toMatchSnapshot('hint')`) sits between the name and the counter, so the name is matched
     as a prefix.
+
+    jest writes the same file with two differences: the describe titles are joined by a space
+    (``exports[`Events CDATA 1`]``) and a hint follows a colon (``Events CDATA: hint 1``).
     """
+    jest = runner == "jest"
     forward = {real: new for new, real in back.items()}
     patterns = [(re.compile(p[: -len(re.escape(e))]), e) for p, e in rules]
+    if jest:
+        forward = {k.replace(SEP, " "): v.replace(SEP, " ") for k, v in forward.items()}
+        gap = re.escape(SEP)
+        patterns = [(re.compile(p.pattern.replace(gap, re.escape(" "))), e) for p, e in patterns]
 
     def renamed(test_id: str) -> str | None:
         if test_id in forward:
@@ -714,19 +724,30 @@ def rename_snapshot_keys(snap: str, path: str, back: dict[str, str], rules: list
                 return test_id + ending
         return None
 
+    def cuts(head: str):
+        """(test name, what follows it), longest name first."""
+        if jest:
+            yield head, ""
+            at = head.rfind(": ")
+            while at > 0:
+                yield head[:at], head[at:]
+                at = head.rfind(": ", 0, at)
+            return
+        pieces = head.split(SEP)
+        for cut in range(len(pieces), 0, -1):
+            yield SEP.join(pieces[:cut]), "".join(SEP + p for p in pieces[cut:])
+
     def swap(match: re.Match) -> str:
         key = match.group(1)
         name = key.replace("\\`", "`").replace("\\${", "${").replace("\\\\", "\\")
         head, _, counter = name.rpartition(" ")
         if not counter.isdigit():
             return match.group(0)
-        # longest name first: with a hint the key is "<name> > <hint> <n>"
-        pieces = head.split(SEP)
-        for cut in range(len(pieces), 0, -1):
-            new = renamed(f"{path}::{SEP.join(pieces[:cut])}")
+        for test, rest in cuts(head):
+            new = renamed(f"{path}::{test}")
             if new is None:
                 continue
-            fresh = SEP.join([new.split("::", 1)[1], *pieces[cut:]]) + f" {counter}"
+            fresh = new.split("::", 1)[1] + rest + f" {counter}"
             fresh = fresh.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
             return f"exports[`{fresh}`] = "
         return match.group(0)

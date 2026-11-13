@@ -62,6 +62,7 @@ real behavior."""
 TOOLCHAIN = {
     "pytest": "The project and pytest are installed.",
     "vitest": "The project's dependencies and vitest are installed, run the tests with `npx vitest run`.",
+    "jest": "The project's dependencies and jest are installed, run the tests with `npx jest`.",
 }
 
 LHT_INSTRUCTIONS = """\

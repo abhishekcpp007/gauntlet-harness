@@ -50,7 +50,7 @@ from gauntlet_sandbox import SandboxError
 from .leakcheck import statement_leaks
 from .sandboxing import boot
 from .schema import HarnessTask, PRInfo, Rejected
-from .testing import apply_patch, classify, run_suite, summarize
+from .testing import apply_patch, classify, lost_report, run_suite, summarize
 
 ENV_REPO = "gauntlet-harness-env"
 DEP_FILES = re.compile(r"^(pyproject\.toml|setup\.py|setup\.cfg|(.*/)?[^/]*requirements[^/]*\.txt)$")
@@ -362,6 +362,12 @@ def build_task(
         if isinstance(retry, HarnessTask):
             retry.validation["scope_fallback"] = f"full suite gave no report within {test_timeout:.0f}s"
         return retry
+
+    # A run that reports nothing after the base run reported plenty was killed or crashed, and
+    # it must not be read as "every test is new". eslint-plugin-jest #2036 came out as a task
+    # with 4,194 new tests and no regression guard at all, because its `test` run left no report.
+    if lost := lost_report(run, [test, *test_repeats, *fixes]):
+        return reject("runs", lost, runs={"run": summarize(run), "test": summarize(test)})
 
     # 5. transitions
     trans = classify(run, test, fixes, test_repeats)

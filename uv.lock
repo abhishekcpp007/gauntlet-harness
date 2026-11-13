@@ -328,7 +328,7 @@ dev = [
 [[package]]
 name = "gauntlet-repo2env"
 version = "0.1.0"
-source = { git = "https://github.com/abhishekcpp007/gauntlet-repo2env#113d206385860023ef83ee7396b5c4c22b6e8710" }
+source = { git = "https://github.com/abhishekcpp007/gauntlet-repo2env#6f2949eea348b061270fa1b84a4fdf93adefa2dd" }
 dependencies = [
     { name = "gauntlet-sandbox" },
     { name = "pydantic" },

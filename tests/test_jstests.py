@@ -520,3 +520,38 @@ def test_a_describe_kept_in_a_variable_is_still_followed():
     out, back, rules = jstests.rename_targets(source, "a.test.js", ids, random.Random(1))
     assert _parses(out, "a.test.js")
     assert jstests.restore_id(ids[0] + rules[0][1], back, rules) == ids[0]
+
+
+JEST_SNAP = """\
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`calc div formats a quotient 1`] = `2.5`;
+
+exports[`calc div formats a quotient: as text 1`] = `"2.5"`;
+
+exports[`calc div rounds 1`] = `3`;
+"""
+
+
+def test_jest_snapshot_keys_follow_a_rename():
+    """jest joins describe titles with a space and puts a hint after a colon."""
+    path = "test/calc.test.js"
+    back = {f"{path}::calc > div > formats a quotient early": f"{path}::calc > div > formats a quotient"}
+    out = jstests.rename_snapshot_keys(JEST_SNAP, path, back, [], "jest")
+    assert "exports[`calc div formats a quotient early 1`] = `2.5`;" in out
+    assert "exports[`calc div formats a quotient early: as text 1`]" in out
+    assert "exports[`calc div rounds 1`] = `3`;" in out  # not a target, not touched
+    assert "exports[`calc div formats a quotient 1`]" not in out
+    assert jstests.rename_snapshot_keys(JEST_SNAP, path, {}, [], "jest") == JEST_SNAP
+
+
+def test_a_canary_uses_a_name_imported_from_jest_globals():
+    source = (
+        "import { describe, it, expect } from '@jest/globals'\n\n"
+        "describe('calc', () => {\n  it('adds', () => {})\n})\n"
+    )
+    out, fail_ids, pass_ids = jstests.plant_canaries(
+        source, "test/calc.test.js", ["test/calc.test.js::calc > adds"], random.Random(1), 2
+    )
+    assert len(fail_ids) == 2 and len(pass_ids) == 2
+    assert "test(" not in out.replace("it(", "")  # `test` was never imported

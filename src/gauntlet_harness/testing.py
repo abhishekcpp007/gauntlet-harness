@@ -25,7 +25,7 @@ from __future__ import annotations
 import shlex
 import xml.etree.ElementTree as ET
 
-from gauntlet_repo2env import PatchFailed, parse_junit, suite_command
+from gauntlet_repo2env import PatchFailed, parse_report, suite_command
 from gauntlet_sandbox import Sandbox
 from pydantic import BaseModel, Field
 
@@ -41,7 +41,16 @@ _STATUS = {
     "skipped": Status.SKIPPED,
 }
 
-__all__ = ["JUNIT_PATH", "PatchFailed", "Transitions", "apply_patch", "classify", "run_suite", "summarize"]
+__all__ = [
+    "JUNIT_PATH",
+    "PatchFailed",
+    "Transitions",
+    "apply_patch",
+    "classify",
+    "lost_report",
+    "run_suite",
+    "summarize",
+]
 
 
 def _test_file(target: str) -> str:
@@ -75,10 +84,24 @@ def run_suite(
     finally:
         sb.exec(f"rm -f {JUNIT_PATH}")
     try:
-        parsed = parse_junit(xml_text)
-    except ET.ParseError:  # the runner was killed mid-write (timeout, OOM): same as no report
+        parsed = parse_report(xml_text, workdir)
+    except (ET.ParseError, ValueError):  # the runner was killed mid-write (timeout, OOM): same as no report
         return {}
     return {test_id: _STATUS[status] for test_id, status in parsed.items()}
+
+
+def lost_report(run: dict, later: list[dict]) -> str | None:
+    """Why these runs can't be classified, when a later one reported nothing and the base did.
+
+    An empty base run is fine: the scope may hold only files the PR adds. An empty run after a
+    base run that found tests means the runner died before it wrote its report.
+    """
+    if run and not all(later):
+        return (
+            f"the suite reported {len(run)} test(s) at the base commit and nothing in a later run, "
+            "so the runner was killed or crashed before writing its report"
+        )
+    return None
 
 
 def apply_patch(sb: Sandbox, workdir: str, patch: str, name: str) -> None:

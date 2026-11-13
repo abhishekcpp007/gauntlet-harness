@@ -81,7 +81,7 @@ def new_test_names(test_patch: str) -> list[str]:
 
 def new_test_needles(test_patch: str, runner: str = "pytest") -> list[str]:
     """What to search a sandbox for to find the hidden tests by name."""
-    if runner == "vitest":
+    if runner in ("vitest", "jest"):
         return sorted({m[0] for m in _JS_TEST_CALL.findall(test_patch)})
     return [f"def {n}(" for n in new_test_names(test_patch)]
 
