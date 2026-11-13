@@ -80,7 +80,25 @@ partial-credit term from target rate to mean milestone rate.
 Collection-masked tests (`lht.unmask`): a test that PASSED in the `run` stage, read NONE in
 `test` because the release's test changes broke collection, and has the same AST at both
 releases is a P2P guard, not a target. Without this boltons 26.1.0 -> 26.2.0 had 388 targets
-that one import fix would mostly earn. Counted in `validation["masked_p2p"]`.
+that one import fix would mostly earn. Counted in `validation["masked_p2p"]`. A test's body
+includes the same-file base classes and mixins it inherits from, module-level tests inside an
+`if` or `try` count, and a test file that's byte-identical at both releases is unchanged by
+definition.
+
+Test scope (`build_range_task(..., scope="full")`, `build-lht --scope`): an LHT task runs the
+whole suite by default, so `test_scope` is empty and P2P guards every module, not just the
+files the release touched. With `scope="changed"` markupsafe 3.0.2 -> 3.0.3 had zero P2P
+tests. If the full suite writes no report the build falls back to the changed files and sets
+`validation["scope_fallback"]`.
+
+Canaries on a full-suite LHT task (`grading.Canary.sites`): one set next to the first graded
+test, as for SWE, and one in another graded file, the biggest the release didn't touch if
+there is one. A hidden test file can import an API the agent hasn't written yet and fail to
+collect, and with one site that read as tampering and zeroed an honest agent's milestones
+(tenacity 9.2.0 -> 9.2.1). Two sites also cut how often a cheat that spares each file's last
+two tests gets past every canary, from 1.13% to 0.02% of 25,000 layouts. Canary results are
+matched by base id, since a conftest can parametrize every test (markupsafe reports
+`name[markupsafe._native]`).
 
 Direct commits are milestones too (`commit-<sha12>`), via `lht.units_in_order`.
 
@@ -130,7 +148,7 @@ network, how much memory and CPU the runner needs. `repo2env.suite_command` is t
 suite is run from. `grading.py` keeps the strategy (plant must-fail and must-pass tests, rename
 the targets, hash before and after) and hands the file editing to `jstests.py` for vitest. The
 pytest values moved into `runners.py` unchanged and a test pins the exact pytest command, so the
-53 SWE and 15 LHT Python tasks are graded by the commands they were validated with.
+53 SWE and 25 LHT Python tasks are graded by the commands they were validated with.
 
 **A vitest id is `path::describe > describe > title`.** The canary goes into the describe block
 that holds the graded tests and copies the test it borrows a name from: the same call (`it` or

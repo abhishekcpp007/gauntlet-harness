@@ -160,6 +160,24 @@ def test_tests_hidden_by_a_collection_crash_go_back_to_p2p():
     assert kept == ["t.py::test_body_changed", "t.py::test_brand_new", "gone.py::test_x"]
 
 
+def test_unmask_sees_tests_in_untouched_files_if_blocks_and_mixins():
+    # all three hid 50 boltons tests once the LHT build ran the whole suite
+    guarded = "import sys\n\nif sys.platform != 'x':\n\n    def test_gc():\n        assert 1\n"
+    mixins = "class Base:\n    def test_buf(self):\n        assert 1\n\n\nclass TestBytes(Base):\n    pass\n"
+    changed_mixins = "import new_helper\n\n\n" + mixins + "\n\ndef test_new():\n    assert 2\n"
+    overridden = mixins.replace("    pass\n", "    def test_buf(self):\n        assert 0\n")
+    before = {"g.py": guarded, "m.py": mixins, "o.py": mixins}
+    after = {"g.py": guarded, "m.py": changed_mixins, "o.py": "import x\n" + overridden}
+    run = {
+        "g.py::test_gc": "PASSED",
+        "m.py::TestBytes::test_buf": "PASSED",
+        "o.py::TestBytes::test_buf": "PASSED",
+    }
+    kept, masked = unmask([*run, "m.py::test_new"], run, before.get, after.get)
+    assert masked == ["g.py::test_gc", "m.py::TestBytes::test_buf"]  # untouched file, inherited body
+    assert kept == ["o.py::TestBytes::test_buf", "m.py::test_new"]  # the override changed the test
+
+
 def _lht_task(milestones: list[Milestone], p2p: list[str] = ()) -> HarnessTask:
     targets = [t for m in milestones for t in m.tests]
     return HarnessTask(
@@ -318,7 +336,10 @@ def test_release_range_becomes_an_lht_task(built):
         ],
         "pr-4": ["tests/test_neg.py::test_neg_flips_sign"],
     }
-    assert task.p2p == ["tests/test_calc.py::test_add"]
+    # test_props.py is a module the release never touches: only the full suite guards it
+    assert task.p2p == ["tests/test_calc.py::test_add", "tests/test_props.py::test_add_commutes"]
+    assert task.test_scope == [] and task.validation["scope"] == "full"
+    assert "scope_fallback" not in task.validation
     assert h.dropped_regressions == []
     assert "1. Fix division and add mul" in task.problem_statement
     assert "def neg" in task.gold_patch and "tests/" not in task.gold_patch
@@ -359,9 +380,10 @@ def test_gold_resolves_and_half_a_release_earns_half(built):
 def test_shipped_lht_dataset_is_whole():
     path = Path(__file__).parent.parent / "datasets" / "gauntlet-lht-2026-11" / "tasks.jsonl"
     tasks = [HarnessTask.model_validate_json(line) for line in path.read_text().splitlines() if line.strip()]
-    assert len(tasks) == 16
+    assert len(tasks) == 25
     for task in tasks:
         assert task.category == "lht" and task.horizon is not None
+        assert task.test_scope == [] and task.validation["scope"] == "full", task.instance_id
         owned = sorted(t for m in task.horizon.milestones for t in m.tests)
         assert owned == sorted(task.targets), task.instance_id  # every target in exactly one milestone
         assert task.validation["leakcheck"]["ok"] and task.validation["python"]

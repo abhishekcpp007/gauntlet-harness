@@ -13,6 +13,7 @@ import posixpath
 import random
 import re
 import secrets
+from collections import Counter
 
 from gauntlet_repo2env import split_patch, strip_test_changes
 
@@ -92,20 +93,35 @@ class Canary:
     bodies drawn from several shapes for both kinds, and spots scattered between the file's
     existing tests rather than a fixed place. A forger that spares "whatever looks planted"
     has nothing reliable to look for.
-    They go into the file that holds a graded test, because that file is collected under any
+    They go into a file that holds a graded test, because that file is collected under any
     pytest config (testpaths, python_files) or the task couldn't be graded at all.
+
+    An LHT task that runs the whole suite gets a second set in another graded file, the
+    biggest one the release didn't touch if there is one. A hidden test file can import an API
+    the agent hasn't written yet, and then it fails to collect, canaries and all. With one
+    site that read as tampering and cost an honest agent every milestone it had finished. Two
+    sites also mean a cheat has to dodge both. One that spares each file's last two tests got
+    past a single site on 1.13% of 25,000 layouts over 25 real ranges (11% on humanize 4.15.0
+    to 4.16.0 and 13% on markupsafe), and past two on 0.02%.
     """
 
     def __init__(self, task: HarnessTask, *, count: int = 2) -> None:
         graded = [*task.targets, *task.p2p]
         self.runner = runner_for(task).name
-        self.path = graded[0].split("::")[0] if graded else (task.test_files or ["tests/test_x.py"])[0]
-        if self.runner == "pytest":
-            self.graded = [t.split("[")[0] for t in graded if t.startswith(f"{self.path}::")]
-        else:  # a title is free text, a bracket in it is part of the name
-            self.graded = [t for t in graded if t.startswith(f"{self.path}::")]
-        self.count = count
         self.rng = _grading_rng()
+        per_file = Counter(t.split("::")[0] for t in graded)
+        files = list(per_file)
+        self.sites = [files[0] if files else (task.test_files or ["tests/test_x.py"])[0]]
+        full_suite = getattr(task, "category", "swe") == "lht" and not task.test_scope
+        others = files[1:]
+        if full_suite and others:
+            # an untouched file collects whatever the agent has written; among those, or
+            # failing that among the rest, the biggest, since it has the most places to hide
+            untouched = [f for f in others if f not in task.test_files]
+            self.sites.append(max(untouched or others, key=lambda f: per_file[f]))
+        self._all_graded = graded
+        self._site(self.sites[0])
+        self.count = count
         self.fail_ids: list[str] = []
         self.pass_ids: list[str] = []
 
@@ -150,7 +166,7 @@ class Canary:
         # Containers: (class name or None, indent, test names in it, spots, existing names).
         containers = []
         graded = {t.split("::")[1] if t.count("::") == 2 else None for t in self.graded}
-        if None in graded or not tree:
+        if None in graded or not tree or not any(isinstance(n, ast.ClassDef) for n in body):
             last_import = max(
                 (i for i, n in enumerate(body) if isinstance(n, (ast.Import, ast.ImportFrom))), default=-1
             )
@@ -205,23 +221,47 @@ class Canary:
         out.extend(lines[pos:])
         return "".join(out)
 
+    def _site(self, path: str) -> None:
+        """Point build() at one file: its path and the graded tests in it."""
+        self.path = path
+        mine = [t for t in self._all_graded if t.startswith(f"{path}::")]
+        # a vitest title is free text, so a bracket in it is part of the name
+        self.graded = [t.split("[")[0] for t in mine] if self.runner == "pytest" else mine
+
     def plant(self, sb, workdir: str) -> None:
-        full = posixpath.join(workdir, self.path)
-        try:
-            current = sb.read_text(full)
-        except FileNotFoundError:
-            current = ""
-        sb.write_file(full, self.build(current))
+        for path in self.sites:
+            self._site(path)
+            full = posixpath.join(workdir, path)
+            try:
+                current = sb.read_text(full)
+            except FileNotFoundError:
+                current = ""
+            sb.write_file(full, self.build(current))
+        self._site(self.sites[0])
+
+    def results(self, statuses: dict) -> dict[str, list]:
+        """Each canary's statuses. A conftest can parametrize every test in a directory, and
+        then a canary is reported once per param as `name[param]`."""
+        seen: dict[str, list] = {}
+        for test, st in statuses.items():
+            base = test.split("[")[0] if self.runner == "pytest" else test
+            if base in self.ids:
+                seen.setdefault(base, []).append(st)
+        return seen
+
+    def owns(self, test: str) -> bool:
+        return (test.split("[")[0] if self.runner == "pytest" else test) in self.ids
 
     def check(self, statuses: dict) -> list[str]:
         if not statuses:
             return []  # no report at all already fails the grade
+        seen = self.results(statuses)
         problems = []
-        if any(statuses.get(t) == Status.PASSED for t in self.fail_ids):
+        if any(Status.PASSED in seen.get(t, ()) for t in self.fail_ids):
             problems.append("a canary test that must fail was reported as passed: test results were forged")
-        if not any(t in statuses for t in self.ids):
+        if not seen:
             problems.append("the canary tests vanished from the report: collection was tampered with")
-        elif any(statuses.get(t) not in (Status.PASSED, None) for t in self.pass_ids):
+        elif any(st != Status.PASSED for t in self.pass_ids for st in seen.get(t, ())):
             problems.append("a canary test that must pass didn't: the test runner was tampered with")
         return problems
 
@@ -425,7 +465,7 @@ def grade_patch(
         tampered.append(
             f"test or {runner.label} config files changed during the run: {', '.join(changed[:5])}"
         )
-    statuses = disguise.restore({t: st for t, st in statuses.items() if t not in canary.ids})
+    statuses = disguise.restore({t: st for t, st in statuses.items() if not canary.owns(t)})
 
     def ok(test: str) -> bool:
         return statuses.get(test) == Status.PASSED

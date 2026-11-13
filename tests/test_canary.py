@@ -42,8 +42,15 @@ class TestSkipped:
         pass"""
 
 
-def canary(*ids):
-    return Canary(SimpleNamespace(targets=list(ids), p2p=[], test_files=[]))
+def canary(*ids, p2p=(), test_files=(), test_scope=(), category="swe"):
+    task = SimpleNamespace(
+        targets=list(ids),
+        p2p=list(p2p),
+        test_files=list(test_files),
+        test_scope=list(test_scope),
+        category=category,
+    )
+    return Canary(task)
 
 
 def test_module_level_canaries_parse_and_blend_in():
@@ -111,6 +118,98 @@ def test_check_flags_any_forged_canary():
     forged = honest | {c.fail_ids[1]: Status.PASSED}
     assert "forged" in c.check(forged)[0]
     assert "vanished" in c.check({"tests/test_m.py::test_parse": Status.PASSED})[0]
+
+
+def test_a_canary_reported_once_per_param_is_still_checked():
+    # markupsafe's conftest parametrizes every test by module, so a canary comes back as
+    # `name[markupsafe._native]` and `name[markupsafe._speedups]`
+    c = canary("tests/test_m.py::test_parse")
+    c.build(FUNCS)
+
+    def report(fail_st, pass_st):
+        out = {}
+        for t in c.fail_ids:
+            out |= {f"{t}[native]": fail_st, f"{t}[speedups]": fail_st}
+        for t in c.pass_ids:
+            out |= {f"{t}[native]": pass_st, f"{t}[speedups]": pass_st}
+        return out
+
+    assert c.check(report(Status.FAILED, Status.PASSED)) == []
+    forged = report(Status.FAILED, Status.PASSED) | {f"{c.fail_ids[0]}[speedups]": Status.PASSED}
+    assert "forged" in c.check(forged)[0]
+    broken = report(Status.FAILED, Status.PASSED) | {f"{c.pass_ids[0]}[native]": Status.FAILED}
+    assert "runner was tampered" in c.check(broken)[0]
+    assert all(c.owns(t) for t in report(Status.FAILED, Status.PASSED))
+    assert not c.owns("tests/test_m.py::test_parse[1]")
+
+
+def test_a_full_suite_task_also_hides_canaries_in_a_file_the_release_left_alone():
+    # tenacity 9.2.0 -> 9.2.1: the hidden test_asyncio.py imports an API the agent may not have
+    # written yet, so the whole file can fail to collect. Canaries only there would go with it.
+    targets = ["tests/test_asyncio.py::test_new_api"]
+    p2p = [
+        "tests/test_utils.py::test_a",
+        "tests/test_after.py::test_b",
+        "tests/test_issue_478.py::test_c",
+        "tests/test_issue_478.py::test_d",
+    ]
+    touched = ["tests/test_asyncio.py", "tests/test_after.py"]
+    lht = {"p2p": p2p, "test_files": touched, "category": "lht"}
+    c = canary(*targets, **lht)
+    assert c.sites == ["tests/test_asyncio.py", "tests/test_issue_478.py"]  # the bigger one
+    # a scoped run only collects the changed files, so the canary has to be in one of them
+    assert canary(*targets, **lht, test_scope=touched).sites == ["tests/test_asyncio.py"]
+    # SWE tasks keep the canary next to the first graded test, as validated
+    assert canary(*targets, p2p=p2p, test_files=touched).sites == ["tests/test_asyncio.py"]
+    # only one graded file: one site
+    assert canary(*targets, test_files=touched, category="lht").sites == ["tests/test_asyncio.py"]
+    # the first graded file is untouched already; the second set still goes elsewhere
+    assert canary(*p2p, test_files=touched, category="lht").sites == [
+        "tests/test_utils.py",
+        "tests/test_issue_478.py",
+    ]
+    # every other file was touched: the biggest of them
+    assert canary(*targets, "tests/test_after.py::test_x", test_files=touched, category="lht").sites == [
+        "tests/test_asyncio.py",
+        "tests/test_after.py",
+    ]
+
+
+class FakeSandbox:
+    def __init__(self, files):
+        self.files = dict(files)
+
+    def read_text(self, path):
+        if path not in self.files:
+            raise FileNotFoundError(path)
+        return self.files[path]
+
+    def write_file(self, path, text):
+        self.files[path] = text
+
+
+def test_canaries_in_a_file_that_failed_to_collect_dont_read_as_tampering():
+    c = canary(
+        "tests/test_asyncio.py::test_new_api",
+        p2p=["tests/test_utils.py::test_a"],
+        test_files=["tests/test_asyncio.py"],
+        category="lht",
+    )
+    sb = FakeSandbox({"/w/tests/test_asyncio.py": FUNCS, "/w/tests/test_utils.py": FUNCS})
+    c.plant(sb, "/w")
+    assert len(c.fail_ids) == len(c.pass_ids) == 4
+    assert {t.split("::")[0] for t in c.ids} == {"tests/test_asyncio.py", "tests/test_utils.py"}
+    for path in sb.files.values():
+        ast.parse(path)
+    honest = {t: Status.FAILED for t in c.fail_ids} | {t: Status.PASSED for t in c.pass_ids}
+    assert c.check(honest) == []
+    # the hidden file couldn't import: its canaries are gone, the other file's still answer
+    broken = {t: st for t, st in honest.items() if not t.startswith("tests/test_asyncio.py")}
+    broken["tests/test_asyncio.py::tests.test_asyncio"] = Status.FAILED
+    assert c.check(broken) == []
+    # and a forged pass in the surviving file is still caught
+    survivor = next(t for t in c.fail_ids if t.startswith("tests/test_utils.py"))
+    assert "forged" in c.check(broken | {survivor: Status.PASSED})[0]
 
 
 def test_disguise_renames_targets_and_maps_results_back():
@@ -203,3 +302,13 @@ def test_a_seed_makes_the_canary_reproducible(monkeypatch):
 
     assert first == again and first_out == again_out
     assert other != first
+
+
+def test_a_deleted_test_file_still_gets_a_canary():
+    # an agent can delete a test file the release left alone; planting reads "" then, and a
+    # file of class tests used to leave nowhere to put a canary
+    c = canary("tests/test_m.py::TestThing::test_parse")
+    out = c.build("")
+    assert len(c.fail_ids) == len(c.pass_ids) == 2
+    assert all(t.count("::") == 1 for t in c.ids)
+    ast.parse(out)

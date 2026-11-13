@@ -297,21 +297,51 @@ def range_statement(slug: str, from_ref: str, to_ref: str, prs: list[PRInfo], di
     return "\n\n".join(parts)
 
 
+def _module_level(body: list[ast.stmt]) -> list[ast.stmt]:
+    """Statements at module level, looking through `if`/`try` blocks. boltons defines its gcutils
+    tests inside `if '__pypy__' not in sys.builtin_module_names:`."""
+    out: list[ast.stmt] = []
+    for node in body:
+        if isinstance(node, ast.If):
+            out += _module_level(node.body) + _module_level(node.orelse)
+        elif isinstance(node, ast.Try):
+            out += _module_level(node.body) + _module_level(node.orelse) + _module_level(node.finalbody)
+            for handler in node.handlers:
+                out += _module_level(handler.body)
+        else:
+            out.append(node)
+    return out
+
+
 def _test_bodies(source: str | None) -> dict[tuple[str | None, str], str]:
-    """(class or None, test name) -> its AST, formatting and line numbers left out."""
+    """(class or None, test name) -> its AST, formatting and line numbers left out.
+
+    A method a class inherits from a base defined in the same file counts as the class's own,
+    which is how pytest reports it: boltons' TestSpooledBytesIO gets 48 tests from a mixin.
+    """
     try:
         tree = ast.parse(source or "")
     except SyntaxError:
         return {}
     out: dict[tuple[str | None, str], str] = {}
     funcs = (ast.FunctionDef, ast.AsyncFunctionDef)
-    for node in tree.body:
+    nodes = _module_level(tree.body)
+    classes = {n.name: n for n in nodes if isinstance(n, ast.ClassDef)}
+
+    def methods(cls: ast.ClassDef, seen: set[str]) -> dict[str, str]:
+        found: dict[str, str] = {}
+        for base in cls.bases:  # bases first, so the class's own definitions win
+            if isinstance(base, ast.Name) and base.id in classes and base.id not in seen:
+                found.update(methods(classes[base.id], seen | {base.id}))
+        found.update({sub.name: ast.dump(sub) for sub in cls.body if isinstance(sub, funcs)})
+        return found
+
+    for node in nodes:
         if isinstance(node, funcs):
             out[(None, node.name)] = ast.dump(node)
         elif isinstance(node, ast.ClassDef):
-            for sub in node.body:
-                if isinstance(sub, funcs):
-                    out[(node.name, sub.name)] = ast.dump(sub)
+            for name, dump in methods(node, {node.name}).items():
+                out[(node.name, name)] = dump
     return out
 
 
@@ -326,7 +356,7 @@ def unmask(n2p: list[str], run: dict, read_before, read_after) -> tuple[list[str
     at both releases isn't new behaviour. It's a regression guard that couldn't be collected,
     so it goes to P2P, where breaking it still costs the agent.
     """
-    cache: dict[str, tuple[dict, dict]] = {}
+    cache: dict[str, tuple[bool, dict, dict]] = {}
     kept, masked = [], []
     for test in n2p:
         if run.get(test) != Status.PASSED:
@@ -335,9 +365,12 @@ def unmask(n2p: list[str], run: dict, read_before, read_after) -> tuple[list[str
         path, *rest = test.split("[")[0].split("::")
         key = (rest[0], rest[1]) if len(rest) == 2 else (None, rest[0] if rest else "")
         if path not in cache:
-            cache[path] = (_test_bodies(read_before(path)), _test_bodies(read_after(path)))
-        before, after = cache[path]
-        if key in before and before.get(key) == after.get(key):
+            old, new = read_before(path), read_after(path)
+            # a file the release didn't touch holds the same tests, whatever shape they're in
+            same = old is not None and old == new
+            cache[path] = (same, _test_bodies(old), _test_bodies(new))
+        same, before, after = cache[path]
+        if same or (key in before and before.get(key) == after.get(key)):
             masked.append(test)
         else:
             kept.append(test)
@@ -365,6 +398,7 @@ def build_range_task(
     max_prs: int = MAX_PRS,
     max_gold_lines: int = MAX_GOLD_LINES,
     issue_texts: dict[int, dict[int, str]] | None = None,
+    scope: str = "full",
     log: Log = lambda _: None,
 ) -> HarnessTask | Rejected:
     """Validate one release range end to end. Expected failures come back as Rejected.
@@ -453,7 +487,10 @@ def build_range_task(
         gold_patch=gold_patch,
         test_patch=test_patch,
         test_files=tests,
-        test_scope=test_modules,
+        # The whole suite by default. An agent edits a whole release's worth of code over hundreds
+        # of steps, so P2P has to cover the modules the release didn't touch too. With only the
+        # changed test files, markupsafe 3.0.2 -> 3.0.3 came out with P2P = 0: nothing guarded.
+        test_scope=test_modules if scope == "changed" else [],
     )
 
     # 4. the three runs
@@ -478,6 +515,29 @@ def build_range_task(
         timings["fix"] = round(time.monotonic() - t, 2)
     except (PatchFailed, SandboxError) as e:
         return reject("runs", str(e)[:2000])
+
+    # Same fallback as SWE: a suite too big for the budget comes back with no report at all
+    if scope == "full" and not run and not test and not any(fixes):
+        log(f"{iid}: the full suite gave no report in {test_timeout:.0f}s, retrying on the changed tests")
+        retry = build_range_task(
+            slug,
+            from_ref,
+            to_ref,
+            cache_dir=cache_dir,
+            python=python,
+            fix_runs=fix_runs,
+            strict_statement=strict_statement,
+            repo_url=repo_url,
+            test_timeout=test_timeout,
+            max_prs=max_prs,
+            max_gold_lines=max_gold_lines,
+            issue_texts=issue_texts,
+            scope="changed",
+            log=log,
+        )
+        if isinstance(retry, HarnessTask):
+            retry.validation["scope_fallback"] = f"full suite gave no report within {test_timeout:.0f}s"
+        return retry
 
     # 5. transitions, with regressions dropped up to a cap instead of failing the range
     trans = classify(run, test, fixes)
@@ -535,7 +595,7 @@ def build_range_task(
         "env_reused": reused,
         "fix_runs": len(fixes),
         "statement_leak": leaked,
-        "scope": "changed",
+        "scope": scope,
         "rules": "multi-swe-bench, regressions dropped up to a cap",
         "python": python,
         "masked_p2p": len(masked),

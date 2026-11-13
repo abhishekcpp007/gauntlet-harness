@@ -11,7 +11,8 @@
                   with v0.1.0, and v0.2.0 must still pair with v0.1.0, never with v0.1.1.
 
 The range v0.1.0 -> v0.2.0 is the LHT task: two milestones, pr-1 with three tests and pr-4
-with one, and test_add as the P2P guard.
+with one. test_add guards P2P, and so does tests/test_props.py, a module the release never
+touches, which only a full-suite run sees.
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ def _git(repo: Path, *args: str) -> str:
 REPO = "acme/calc"
 HEADER = "# calc: a tiny calculator\n"
 NEG = "\n\ndef neg(a):\n    return -a\n"
+PROPS_TESTS = "from calc import add\n\n\ndef test_add_commutes():\n    assert add(2, 3) == add(3, 2)\n"
 NEG_TESTS = "from calc import neg\n\n\ndef test_neg_flips_sign():\n    assert neg(2) == -2\n"
 
 
@@ -52,7 +54,13 @@ def make_release_repo(root: Path) -> Path:
     repo.mkdir(parents=True)
     _git(repo, "init", "-q", "-b", "main")
     _write(
-        repo, {"pyproject.toml": PYPROJECT, "calc/__init__.py": BASE_CALC, "tests/test_calc.py": BASE_TESTS}
+        repo,
+        {
+            "pyproject.toml": PYPROJECT,
+            "calc/__init__.py": BASE_CALC,
+            "tests/test_calc.py": BASE_TESTS,
+            "tests/test_props.py": PROPS_TESTS,
+        },
     )
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "Initial calc")

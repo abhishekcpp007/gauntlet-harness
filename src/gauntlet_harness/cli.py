@@ -195,6 +195,7 @@ def cmd_build_lht(args: argparse.Namespace) -> int:
                 repo_url=args.repo_url,
                 max_prs=args.max_prs,
                 max_gold_lines=args.max_gold_lines,
+                scope=args.scope,
                 log=_say,
             )
         except Exception as e:
@@ -549,6 +550,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--fix-runs", type=int, default=2)
     p.add_argument("--max-prs", type=int, default=40)
     p.add_argument("--max-gold-lines", type=int, default=6000)
+    p.add_argument(
+        "--scope",
+        choices=["full", "changed"],
+        default="full",
+        help="full runs the whole suite so P2P guards the modules the release didn't touch",
+    )
     p.add_argument("--no-leakcheck", action="store_true")
     p.add_argument("--rubric", action="store_true", help="add LLM-written rubric items (needs credentials)")
     p.add_argument("--judge-model", default="claude-opus-5-5")
