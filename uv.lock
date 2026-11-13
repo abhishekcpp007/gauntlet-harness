@@ -337,7 +337,7 @@ dependencies = [
 [[package]]
 name = "gauntlet-sandbox"
 version = "0.1.0"
-source = { git = "https://github.com/abhishekcpp007/gauntlet-sandbox#5b54516db9365550749e3ff145b79a7d527e8f90" }
+source = { git = "https://github.com/abhishekcpp007/gauntlet-sandbox#8c2628dccc0ba3c8ca6033f8fb9ddc5f777818ee" }
 dependencies = [
     { name = "docker" },
     { name = "pydantic" },
