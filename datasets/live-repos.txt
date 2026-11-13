@@ -13,3 +13,15 @@ pytest-dev/pluggy
 mahmoud/boltons
 pallets/markupsafe
 python-attrs/cattrs
+# JavaScript and TypeScript repos that test with vitest
+radashi-org/radashi
+i18next/i18next
+Rich-Harris/magic-string
+immerjs/immer
+unjs/exsolve
+cheeriojs/cheerio
+fb55/htmlparser2
+eemeli/yaml
+pillarjs/path-to-regexp
+sveltejs/devalue
+unjs/confbox
