@@ -163,8 +163,7 @@ def prs_in_range(repo: Repo, slug: str, base: str, solution: str) -> tuple[list[
         elif m := SQUASH_SUBJECT_RE.match(subject):
             number, title, body = int(m.group("num")), m.group("title"), rest
         else:
-            touched = changed_files(repo, first_parent, sha) if first_parent else []
-            if any(f.endswith(".py") and not is_test_path(f) for f in touched):
+            if first_parent and _changes_source(repo, first_parent, sha):
                 direct.append(f"{sha[:12]} {subject}")
             continue
         merged = parse_time(date)
@@ -182,6 +181,19 @@ def prs_in_range(repo: Repo, slug: str, base: str, solution: str) -> tuple[list[
             )
         )
     return prs, direct
+
+
+def _changes_source(repo: Repo, before: str, after: str) -> bool:
+    return any(f.endswith(".py") and not is_test_path(f) for f in changed_files(repo, before, after))
+
+
+def source_prs(repo: Repo, prs: list[PRInfo]) -> list[PRInfo]:
+    """The PRs that changed library code. Bot bumps, CI and docs PRs aren't work an agent redoes."""
+    return [
+        p
+        for p in prs
+        if p.base_sha and p.merge_commit_sha and _changes_source(repo, p.base_sha, p.merge_commit_sha)
+    ]
 
 
 _DEF = re.compile(r"^\+\s*(?:async\s+)?def\s+(test\w*)\s*\(", re.M)
@@ -432,8 +444,14 @@ def build_range_task(
                 pr.linked_issues.append(issue)
     if not prs and not direct:
         return reject("filter", "no source changes in the range")
-    if len(prs) > max_prs:
-        return reject("filter", f"{len(prs)} PRs in the range, the cap is {max_prs}", prs=len(prs))
+    changes = len(source_prs(repo, prs)) + len(direct)
+    if changes > max_prs:
+        return reject(
+            "filter",
+            f"{changes} PRs and commits changed source in the range, the cap is {max_prs}",
+            prs=len(prs),
+            changes=changes,
+        )
 
     files = changed_files(repo, base, solution)
     tests = [f for f in files if is_test_path(f)]

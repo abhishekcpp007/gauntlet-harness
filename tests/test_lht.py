@@ -19,6 +19,7 @@ from gauntlet_harness.lht import (
     range_statement,
     release_ranges,
     release_tags,
+    source_prs,
     units_in_order,
     unmask,
 )
@@ -35,7 +36,7 @@ from gauntlet_harness.schema import (
     RubricScore,
 )
 
-from .fakerelease import BASE_CALC, NEG, REPO, make_release_repo
+from .fakerelease import BASE_CALC, NEG, REPO, _git, make_release_repo
 
 
 @pytest.fixture(scope="module")
@@ -71,6 +72,20 @@ def test_prs_in_range_reads_merges_squashes_and_direct_commits(repo):
     assert [(p.number, p.title) for p in prs] == [(1, "Fix division and add mul"), (4, "Add neg")]
     assert all(p.merge_commit_sha and p.base_sha for p in prs)
     assert len(direct) == 1 and direct[0].endswith("Describe calc at the top of the module")
+
+
+def test_only_prs_that_change_source_count_as_work(tmp_path):
+    path = make_release_repo(tmp_path)
+    bot_prs = {5: ".github/workflows/ci.yml", 6: "README.md"}
+    for number, name in bot_prs.items():
+        (path / name).parent.mkdir(parents=True, exist_ok=True)
+        (path / name).write_text("bumped\n")
+        _git(path, "add", "-A")
+        _git(path, "commit", "-q", "-m", f"Bump something (#{number})")
+    repo = clone(str(path), tmp_path / "cache")
+    prs, _ = prs_in_range(repo, REPO, _sha(repo, "v0.1.0"), _sha(repo, "main"))
+    assert [p.number for p in prs] == [1, 4, 5, 6]
+    assert [p.number for p in source_prs(repo, prs)] == [1, 4]
 
 
 def test_direct_commits_are_units_in_merge_order(repo):

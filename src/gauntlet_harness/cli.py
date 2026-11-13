@@ -548,7 +548,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--append", action="store_true", help="add to the output files instead of starting over")
     p.add_argument("--python", default="3.12")
     p.add_argument("--fix-runs", type=int, default=2)
-    p.add_argument("--max-prs", type=int, default=40)
+    p.add_argument("--max-prs", type=int, default=40, help="cap on PRs and direct commits that change source")
     p.add_argument("--max-gold-lines", type=int, default=6000)
     p.add_argument(
         "--scope",
