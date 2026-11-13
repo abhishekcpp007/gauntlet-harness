@@ -70,11 +70,10 @@ No cheat scored above zero on any task. That's 621 cheating episodes with nothin
 
 - 112 changed no JavaScript or TypeScript source (dependency bumps, CI, docs)
 - 18 changed no test module
-- 14 had no test that the fix moves to passing
+- 15 had no test that the fix moves to passing
 - 2 had a fix that breaks a passing test
 - 2 had a statement that quotes the fix
 - 1 was an older yaml commit still on jest
-- 1 hit a Docker timeout during the build
 
 No task in the set failed a leak check.
 

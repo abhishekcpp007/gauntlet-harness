@@ -17,17 +17,15 @@
  },
  "rejected_by_stage": {
   "filter": 130,
-  "transitions": 16,
+  "transitions": 17,
   "statement": 2,
-  "crash": 1,
   "env": 1
  },
  "rejected_reasons": {
   "filter: no JavaScript or TypeScript source changes": 112,
   "filter: no test module changes": 18,
-  "transitions: no test goes from failing, skipped or missing to passing": 14,
+  "transitions: no test goes from failing, skipped or missing to passing": 15,
   "statement: the statement quotes the fix": 2,
-  "crash: ReadTimeout: UnixHTTPConnectionPool(host='localhost', port=None): Read timed out. (read ti": 1,
   "env: eemeli__yaml is a node project, but its tests run on jest, only vitest is handled so far": 1,
   "transitions: the fix breaks 1 passing test(s): src/redos.spec.ts::redos > %25:foo..:bar - /^(?:%25(?=([": 1,
   "transitions: the fix breaks 283 passing test(s): src/index.spec.ts::path-to-regexp > match '$:foo{$:bar": 1
