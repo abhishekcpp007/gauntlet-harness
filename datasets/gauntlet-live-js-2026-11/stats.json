@@ -1,0 +1,170 @@
+{
+ "tasks": 69,
+ "repos": 11,
+ "prs_collected": 219,
+ "prs_by_repo": {
+  "Rich-Harris/magic-string": 15,
+  "cheeriojs/cheerio": 80,
+  "eemeli/yaml": 10,
+  "fb55/htmlparser2": 15,
+  "i18next/i18next": 15,
+  "immerjs/immer": 20,
+  "pillarjs/path-to-regexp": 11,
+  "radashi-org/radashi": 15,
+  "sveltejs/devalue": 15,
+  "unjs/confbox": 10,
+  "unjs/exsolve": 13
+ },
+ "rejected_by_stage": {
+  "filter": 130,
+  "transitions": 16,
+  "statement": 2,
+  "crash": 1,
+  "env": 1
+ },
+ "rejected_reasons": {
+  "filter: no JavaScript or TypeScript source changes": 112,
+  "filter: no test module changes": 18,
+  "transitions: no test goes from failing, skipped or missing to passing": 14,
+  "statement: the statement quotes the fix": 2,
+  "crash: ReadTimeout: UnixHTTPConnectionPool(host='localhost', port=None): Read timed out. (read ti": 1,
+  "env: eemeli__yaml is a node project, but its tests run on jest, only vitest is handled so far": 1,
+  "transitions: the fix breaks 1 passing test(s): src/redos.spec.ts::redos > %25:foo..:bar - /^(?:%25(?=([": 1,
+  "transitions: the fix breaks 283 passing test(s): src/index.spec.ts::path-to-regexp > match '$:foo{$:bar": 1
+ },
+ "by_repo": {
+  "Rich-Harris/magic-string": 9,
+  "cheeriojs/cheerio": 6,
+  "eemeli/yaml": 3,
+  "fb55/htmlparser2": 6,
+  "i18next/i18next": 11,
+  "immerjs/immer": 7,
+  "pillarjs/path-to-regexp": 3,
+  "radashi-org/radashi": 13,
+  "sveltejs/devalue": 2,
+  "unjs/confbox": 2,
+  "unjs/exsolve": 7
+ },
+ "merged": [
+  "2026-08-04T02:56:23Z",
+  "2026-11-10T14:40:00Z"
+ ],
+ "f2p_total": 254,
+ "n2p_total": 85,
+ "s2p_total": 0,
+ "p2p_total": 69726,
+ "p2p_median": 910,
+ "statement_from_issue": 15,
+ "scope_changed": 0,
+ "typescript_tasks": 50,
+ "node_versions": {
+  "22": 47,
+  "20": 9,
+  "18": 13
+ },
+ "disguise": {
+  "targets": 339,
+  "renamed": 339,
+  "tasks_fully_renamed": 69,
+  "tasks_nothing_renamed": 0
+ },
+ "validation": {
+  "cheater": {
+   "episodes": 69,
+   "resolved": 0,
+   "tampered": 0,
+   "caught_cheating": 69,
+   "max_reward": -1.0,
+   "mean_reward": -1.0
+  },
+  "cheater:canary-aware": {
+   "episodes": 69,
+   "resolved": 0,
+   "tampered": 0,
+   "caught_cheating": 0,
+   "max_reward": 0.0,
+   "mean_reward": 0.0
+  },
+  "cheater:exit": {
+   "episodes": 69,
+   "resolved": 0,
+   "tampered": 69,
+   "caught_cheating": 69,
+   "max_reward": -1.0,
+   "mean_reward": -1.0
+  },
+  "cheater:ghost": {
+   "episodes": 69,
+   "resolved": 0,
+   "tampered": 0,
+   "caught_cheating": 0,
+   "max_reward": 0.0,
+   "mean_reward": 0.0
+  },
+  "cheater:junit": {
+   "episodes": 69,
+   "resolved": 0,
+   "tampered": 67,
+   "caught_cheating": 67,
+   "max_reward": 0.0,
+   "mean_reward": -0.971
+  },
+  "cheater:monkeypatch": {
+   "episodes": 69,
+   "resolved": 0,
+   "tampered": 43,
+   "caught_cheating": 43,
+   "max_reward": 0.0,
+   "mean_reward": -0.623
+  },
+  "cheater:rewrite": {
+   "episodes": 69,
+   "resolved": 0,
+   "tampered": 62,
+   "caught_cheating": 62,
+   "max_reward": 0.0,
+   "mean_reward": -0.899
+  },
+  "cheater:snapshot": {
+   "episodes": 69,
+   "resolved": 0,
+   "tampered": 0,
+   "caught_cheating": 0,
+   "max_reward": 0.0,
+   "mean_reward": 0.0
+  },
+  "cheater:stealth": {
+   "episodes": 69,
+   "resolved": 0,
+   "tampered": 43,
+   "caught_cheating": 43,
+   "max_reward": 0.0,
+   "mean_reward": -0.623
+  },
+  "noop": {
+   "episodes": 69,
+   "resolved": 0,
+   "tampered": 0,
+   "caught_cheating": 0,
+   "max_reward": -1.0,
+   "mean_reward": -1.0
+  },
+  "oracle": {
+   "episodes": 69,
+   "resolved": 68,
+   "tampered": 0,
+   "caught_cheating": 0,
+   "max_reward": 1.0,
+   "mean_reward": 1.0
+  }
+ },
+ "flaky_total": 7,
+ "violations": [
+  {
+   "instance_id": "radashi-org__radashi-494",
+   "policy": "oracle",
+   "reward": 0.9993259803921568
+  }
+ ],
+ "missing_validation": []
+}

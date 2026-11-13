@@ -6,7 +6,7 @@
 ![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-Turn pull requests merged on GitHub *this week* into leak-free RL environments for coding agents. Run models in them, record every step, judge each episode on how its tests move (F2P, N2P, S2P, P2P) plus a rubric, and export the episodes as SFT, GRPO or DPO training data.
+Turn pull requests merged on GitHub *this week* into leak-free RL environments for coding agents, from Python repos tested with pytest and JavaScript or TypeScript repos tested with vitest. Run models in them, record every step, judge each episode on how its tests move (F2P, N2P, S2P, P2P) plus a rubric, and export the episodes as SFT, GRPO or DPO training data.
 
 Static benchmarks go stale. Once a fix is on GitHub long enough, it's in somebody's training set, and a high score stops meaning much. This harness keeps making new tasks out of PRs that were merged after a model's cutoff, so the model can't have seen the answer.
 
@@ -88,6 +88,36 @@ ROTTED tkem__cachetools-441: fatal: not a tree object
 `gauntlet calibrate` reports those apart from calibration failures and leaves them out of the promises, because nothing about the grader can be concluded from an episode that never started, and a nightly that goes red for somebody else's force-push is a nightly people stop reading. A failure that is not rot, a Docker error or a timeout, is still a violation. This is the cost of building tasks out of fresh PRs, and the weekly workflow making new ones is what pays it.
 
 The task set ships in two shapes: `tasks.jsonl` for this harness and `swebench.jsonl` for any SWE-bench style harness. The [data card](datasets/gauntlet-live-2026-11/README.md) has the per-repo counts and the full rejection funnel.
+
+## Gauntlet Live JS: the second language
+
+The harness also builds tasks from JavaScript and TypeScript repos that test with vitest. [`datasets/gauntlet-live-js-2026-11`](datasets/gauntlet-live-js-2026-11) is the first set, from PRs merged between 4 August and 10 November 2026.
+
+| | |
+|---|---|
+| Tasks | **69**, from 11 repos (50 with TypeScript tests) |
+| PRs looked at | 219, and 150 rejected for a stated reason |
+| Target tests (F2P + N2P) | 339 |
+| Regression guards (P2P) | 69,726, median 910 per task |
+| Calibration | 759 episodes, 11 policies on every task |
+| Oracle (applies the real fix) | resolves **68 / 69** |
+| Noop (gives up) | resolves 0, reward -1 on every task |
+| 9 cheats, 621 episodes | best reward **0**, none resolved |
+
+The one oracle miss is a flaky regression test in radashi that failed while the machine was busy. Alone, the same episode resolves 3 times of 3, and the test is now dropped from grading. I left the miss in the published results.
+
+Nothing about the grader's design changed for JS: strip the candidate's test edits, plant canaries, rename the targets, hash the test files. What changed is everything underneath, and real repos broke the first version in ways the toy repo never did:
+
+- **vitest died before collecting a test.** A sandbox with networking off has an empty `/etc/hosts`, vite looks up `localhost` on startup, and every run read as "no results". The boot step writes the loopback entries back.
+- **A patch can ship its own test runner.** `git apply` will create `node_modules/vitest/...` inside the repo and Node finds the nearest one first. Those paths are stripped now, along with vitest and vite config.
+- **A leak in the package manager's cache.** radashi #493 was rejected because a line of the fix sat in pnpm's content store. The store is wiped before the image is frozen.
+- **A version bump rebuilt every image.** radashi bumps `version` in `package.json` on most merges, so the env fingerprint ignores fields that don't change what gets installed.
+- **Renaming a test orphaned its snapshot.** htmlparser2 keeps snapshots keyed by test title, so the disguise renames the keys in the `.snap` file too.
+- **Tests made inside a helper function kept their real names.** immer writes `function runBaseTest(name) { it(name, ...) }`. Two cheats that spare anything named like a canary solved 3 immer tasks at about +0.88 through that gap. The renamer follows helper bodies now, and the same 77 episodes end with zero violations.
+
+The disguise can now rename 339 of 339 target tests. On the first build it was 188 of 227.
+
+**What this set doesn't prove.** `cheater:monkeypatch` and `cheater:stealth` only load on 43 of the 69 tasks. The other 26 are on a newer vitest that no longer exports the module the payload hooks, so the cheat scores a quiet 0 there and the table says nothing about that trick on those repos. The [data card](datasets/gauntlet-live-js-2026-11/README.md) says which zeros are a catch and which are a dud. Also not handled yet: jest, workspaces, and repos whose tests import a build.
 
 ## It found its own bugs
 
@@ -218,8 +248,8 @@ I didn't invent the method. Each piece follows a published one:
 ## How a PR becomes a task
 
 1. **Collect.** Closed PRs with `merged_at` set, newest first, through GitHub's public REST API (read-only, `GITHUB_TOKEN` optional). Linked issues come from closing keywords (`fixes #474`). If you hit the rate limit, `--git-fallback` reads merge and squash commits straight from git.
-2. **Filter.** The PR must change Python source and at least one test module. Most PRs fail here: in the live set, 115 of 186 were dependency bumps, CI or docs.
-3. **Environment at the base commit.** The image is built at the commit right before the merge, never later, and pip and apt caches are wiped before it's frozen. Images are cached by a fingerprint of the dependency files, so PRs that share dependencies share an image.
+2. **Filter.** The PR must change source in the repo's language (Python, or JavaScript and TypeScript) and at least one test module. Most PRs fail here: in the live set, 115 of 186 were dependency bumps, CI or docs.
+3. **Environment at the base commit.** The image is built at the commit right before the merge, never later, and pip, npm and apt caches are wiped before it's frozen. Images are cached by a fingerprint of the dependency files, so PRs that share dependencies share an image.
 4. **Statement.** The linked issue's text is preferred. If there isn't one, it's the PR title and body with diff fences, PR links and HTML comments stripped. A statement that contains a distinctive line of the real fix is rejected.
 5. **Three runs.** `run` (base), `test` (base + the PR's tests), and `fix` (base + tests + fix). The fix run happens twice in fresh sandboxes, and any test that disagrees with itself is marked flaky and left out of grading.
 6. **Classify** each test from `test` to `fix`: **F2P** FAILED→PASSED, **N2P** NONE→PASSED (new, or its module couldn't import before), **S2P** SKIPPED→PASSED, **P2P** PASSED→PASSED. Reject the PR if any test regresses or nothing reaches PASSED.
@@ -243,7 +273,7 @@ The whole suite runs by default (`--scope full`), so P2P covers the entire proje
 | Env vars are clean | Nothing smuggled in through the environment |
 | The statement doesn't contain the fix | The issue text doesn't give the answer away |
 
-Lines that already exist at the base commit are skipped, since finding them proves nothing. At grading time, the candidate's edits to tests, `conftest.py`, `pytest.ini` and `tox.ini` are dropped before the hidden tests go on.
+Lines that already exist at the base commit are skipped, since finding them proves nothing. At grading time, the candidate's edits to tests, `conftest.py`, `pytest.ini` and `tox.ini` are dropped before the hidden tests go on. For a vitest task the dropped set is test files, `vitest.config.*`, `vite.config.*` and anything under a `node_modules` folder, since a patch could otherwise ship its own copy of the test runner.
 
 ## Judging
 
@@ -435,7 +465,7 @@ The [Live tasks](.github/workflows/live.yml) workflow runs every Monday. It coll
 
 ## Limits
 
-- Python and pytest only.
+- Two stacks: Python on pytest, and Node on vitest. No jest, no workspaces (monorepos), no repo whose tests import a build. Each is refused with its reason. Go and Rust aren't started. LHT tasks and Cheat Catcher's static rules are Python only. [DESIGN.md](DESIGN.md#the-second-language-javascript-and-typescript-on-vitest) has the list and why.
 - Most merged PRs don't make tasks. Dependency bumps and CI changes are most of them, so small, well-tested repos give the most tasks per PR.
 - Commit messages and PR bodies make weaker statements than real issues. 14 of the 53 live tasks have an issue behind them, and the `statement_source` field says which.
 - A huge suite (packaging, 63k tests) falls back to the PR's own test modules, so P2P guards less of the project for those tasks. `validation.scope_fallback` marks them.

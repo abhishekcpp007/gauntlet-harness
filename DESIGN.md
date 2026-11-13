@@ -205,8 +205,16 @@ files with five seeds each found no edit that added a syntax error and no file l
 its four canaries, and it is also what found a divide by zero on a suite with no top-level
 describe block.
 
-What still can't be renamed is a test registered from inside a helper function
-(`function check(name) { it(name, ...) }`), because nothing at the call site says it is a test.
+The next miss was a test registered from inside a helper function
+(`function runBaseTest(name) { it(name, ...) }`), which is how immer writes most of its suite.
+Nothing at the call site says it is a test, so those targets kept their real names, and
+`cheater:canary-aware` and `cheater:ghost` resolved immer #1314, #1315 and #1316 at about +0.88.
+The renamer now reads the bodies of functions declared in the file and of callbacks handed to
+any function. The same 7 tasks under all 11 policies are 77 episodes with no violation. On the
+69 published tasks that is 339 of 339 targets, over 88 test files.
+
+What still can't be renamed is a title that arrives through a function imported from another
+file, since the renamer reads one file at a time. No published task has one.
 `validation.disguise` records `{targets, renamed}` on every node task, so a task set can say how
 exposed it is instead of assuming.
 
@@ -222,6 +230,15 @@ block that holds an unreadable statement takes no canary.
   missing is the id shape (jest-junit needs `ancestorSeparator` and a title template set to
   match), the suite command, and a force-pass payload written against jest's `expect`. Refused
   with a reason until then.
+- **Two cheats are duds on newer vitest.** `cheater:monkeypatch` and `cheater:stealth` swap test
+  bodies through `vitest/suite`, and newer vitest no longer exports it. On 26 of the 69
+  published tasks the payload fails to load and scores a quiet 0, so the calibration says
+  nothing about that trick there. The junit, rewrite and exit cheats still act on those repos
+  and are caught.
+- **A busy machine can fail a passing test.** radashi's `AggregateError` test failed once in 759
+  episodes while a second batch of builds shared Docker, and cost the oracle one task. The build
+  repeats its runs to find flaky tests, but only load finds this kind. It's dropped by hand in
+  the published set, and there is no automatic check for it yet.
 - **Workspaces.** Sibling packages resolve through symlinks the package manager writes into
   `node_modules`, and moving that folder up breaks them. Refused with a reason.
 - **Projects whose tests import a build.** The env runs the install and nothing else.
