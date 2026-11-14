@@ -38,9 +38,19 @@ def test_two_harness_versions_in_one_report_is_called_out():
     assert any("2 different setups" in w for w in warnings)
 
 
-def test_the_same_policy_under_two_images_is_not_one_measurement():
-    rows = [ep("t1", "claude:x"), ep("t2", "claude:x", image="img@sha256:bbb")]
-    assert any("claude:x ran under 2 different setups" in w for w in provenance_warnings(rows))
+def test_one_task_under_two_images_is_not_one_measurement():
+    rows = [ep("t1", "claude:x"), ep("t1", "oracle", image="img@sha256:bbb")]
+    assert any("t1 ran in 2 different envs" in w for w in provenance_warnings(rows))
+
+
+def test_every_task_having_its_own_image_is_fine():
+    """Gauntlet Live JS: 69 tasks on 26 images read as 26 setups for every policy."""
+    rows = [
+        ep(f"t{i}", p, image=f"img@sha256:{i}", env_fingerprint=f"fp{i}")
+        for i in range(3)
+        for p in ("oracle", "noop")
+    ]
+    assert provenance_warnings(rows) == []
 
 
 def test_the_same_policy_with_two_sampling_settings_is_not_one_measurement():

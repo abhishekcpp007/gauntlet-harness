@@ -141,3 +141,14 @@ def test_the_report_separates_underpowered_from_no_difference():
     text = render_markdown(summary)
     assert "too few tasks" in text and "best possible p = 0.1250" in text
     assert "not a statement about the models" in text
+
+
+def test_pairs_that_solved_the_same_tasks_leave_the_table():
+    """Gauntlet Live JS: 10 cheats that all scored 0 filled 45 rows with nothing to read."""
+    rows = [_episode(f"t{i}", "oracle", True) for i in range(8)]
+    rows += [_episode(f"t{i}", p, False) for i in range(8) for p in ("noop", "cheater")]
+    text = render_markdown(summarize(rows))
+    assert "| oracle | noop |" in text and "| oracle | cheater |" in text
+    assert "| noop | cheater |" not in text and "| cheater | noop |" not in text
+    assert "solved exactly the same tasks" in text
+    assert "too few tasks" not in text

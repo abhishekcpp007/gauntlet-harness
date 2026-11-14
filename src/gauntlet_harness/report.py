@@ -186,16 +186,23 @@ def provenance_warnings(results: list[EpisodeResult]) -> list[str]:
     # some without is exactly the mix worth knowing about
     spread("grading seeds", [p.grading_seed or "unset" for p in seen])
 
-    # images and sampling parameters only have to agree within a policy, since different
-    # policies are meant to differ
+    # sampling parameters only have to agree within a policy, since different policies are
+    # meant to differ, and images only within a task, since every task has its own env
     by_policy: dict[str, set[tuple]] = defaultdict(set)
+    by_task: dict[str, set[tuple]] = defaultdict(set)
     for r in results:
         if r.provenance is not None:
             by_policy[r.policy].add(r.provenance.key())
+            by_task[r.instance_id].add(r.provenance.env_key())
     for policy, keys in sorted(by_policy.items()):
         if len(keys) > 1:
             warnings.append(
                 f"{policy} ran under {len(keys)} different setups, so its rows are not one measurement"
+            )
+    for task, keys in sorted(by_task.items()):
+        if len(keys) > 1:
+            warnings.append(
+                f"{task} ran in {len(keys)} different envs, so policies were not compared on the same one"
             )
     return warnings
 
@@ -280,7 +287,10 @@ def render_markdown(summary: dict[str, Any]) -> str:
             "| A | B | Only A | Only B | p | Verdict |",
             "|---|---|---|---|---|---|",
         ]
+        identical = [c for c in summary["comparisons"] if not c["a_only"] and not c["b_only"]]
         for c in summary["comparisons"]:
+            if c in identical:
+                continue
             if c["significant"]:
                 mark = "significant"
             elif c["underpowered"]:
@@ -291,7 +301,16 @@ def render_markdown(summary: dict[str, Any]) -> str:
             lines.append(
                 f"| {c['a']} | {c['b']} | {c['a_only']} | {c['b_only']} | {c['p_value']:.4f} | {mark} |"
             )
-        if any(c["underpowered"] for c in summary["comparisons"]):
+        groups: list[list[str]] = []
+        for c in identical:
+            group = next((g for g in groups if c["a"] in g or c["b"] in g), None)
+            if group is None:
+                groups.append([c["a"], c["b"]])
+            else:
+                group += [name for name in (c["a"], c["b"]) if name not in group]
+        for group in groups:
+            lines += ["", f"Left out, since they solved exactly the same tasks: {', '.join(group)}."]
+        if any(c["underpowered"] and (c["a_only"] or c["b_only"]) for c in summary["comparisons"]):
             lines += [
                 "",
                 '"Too few tasks" means the test could not have returned a significant result for',

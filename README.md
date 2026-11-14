@@ -447,20 +447,27 @@ Runs are resumable, so that second command picks up exactly where the first stop
 
 ### Every number comes with how much it is worth
 
-A resolve rate off 53 tasks is an estimate, not a measurement, and most published coding-agent numbers are reported without saying so. The report puts a 95% interval next to pass@1 and runs a paired test between every pair of policies:
+A resolve rate off 53 tasks is an estimate, not a measurement, and most published coding-agent numbers are reported without saying so. The report puts a 95% interval next to pass@1 and runs a paired test between every pair of policies. This is `gauntlet report` on the real calibration run of Gauntlet Live JS, 69 tasks and 11 policies, cut to a few rows:
 
 ```
-| Policy                 | Resolved | pass@1 | 95% CI         | Reward | Episodes |
-|------------------------|----------|--------|----------------|--------|----------|
-| openai:gpt-5.1         | 0.396    | 0.396  | 0.264 to 0.528 | 0.396  | 53       |
-| claude:claude-opus-5-5 | 0.340    | 0.340  | 0.207 to 0.472 | 0.340  | 53       |
+| Policy              | Resolved | pass@1 | 95% CI         | F2P   | P2P   | Reward | Cheating | Episodes |
+|---------------------|----------|--------|----------------|-------|-------|--------|----------|----------|
+| oracle              | 0.986    | 0.986  | 0.957 to 1.000 | 1.000 | 1.000 | 1.000  | 0.000    | 69       |
+| cheater:ghost       | 0.000    | 0.000  | 0.000 to 0.000 | 0.000 | 0.999 | 0.000  | 0.000    | 69       |
+| cheater:monkeypatch | 0.000    | 0.000  | 0.000 to 0.000 | 0.623 | 0.999 | -0.623 | 0.623    | 69       |
+| noop                | 0.000    | 0.000  | 0.000 to 0.000 | 0.000 | 1.000 | -1.000 | 0.000    | 69       |
 
-| A              | B                      | Only A | Only B | p      | Verdict             |
-|----------------|------------------------|--------|--------|--------|---------------------|
-| openai:gpt-5.1 | claude:claude-opus-5-5 | 14     | 11     | 0.6900 | no difference found |
+| A      | B             | Only A | Only B | p      | Verdict     |
+|--------|---------------|--------|--------|--------|-------------|
+| oracle | cheater:ghost | 68     | 0      | 0.0000 | significant |
+| oracle | noop          | 68     | 0      | 0.0000 | significant |
+
+Left out, since they solved exactly the same tasks: cheater:canary-aware, cheater:ghost, ...
 ```
 
-Read as a leaderboard that is a 5.6 point win. Read honestly, the two intervals overlap almost entirely and the paired test says p = 0.69, so this run cannot tell the models apart. The harness says so rather than letting you quote the gap.
+No model has been run on these sets yet, so there's no model row here. When one is, two models a few points apart will usually come out "no difference found", and the report says so rather than letting you quote the gap.
+
+Running it on this file found two flaws in the report itself. Every policy got a warning that it "ran under 26 different setups", because each task has its own image and the check compared images across tasks. Images now only have to agree within a task, which is the comparison that matters. And 45 rows of cheat-vs-cheat pairs, all 0 against 0, buried the 10 rows worth reading. Pairs that solved exactly the same tasks are folded into one line now.
 
 There is a third verdict, and the calibration run is what surfaced it. The oracle beat every cheater four games to nothing on a four-task sample, and a plain significant-or-not column called all of those "no". That reading is wrong in a way worth catching: with four disagreements the smallest p an exact paired test can return is 0.125, so **no outcome at all** could have reached 0.05. The sweep was perfect and the test had no power to say so.
 

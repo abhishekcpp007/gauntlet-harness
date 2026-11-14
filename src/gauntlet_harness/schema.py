@@ -222,13 +222,15 @@ class Provenance(BaseModel):
     ran_at: str = ""
 
     def key(self) -> tuple:
-        """The parts that have to match for two episodes to be measuring the same thing."""
+        """The parts that have to match across one policy's episodes, whatever the task."""
         return (
             self.harness_version,
-            self.image,
-            self.env_fingerprint,
             tuple(sorted(self.policy_params.items(), key=lambda kv: kv[0])),
         )
+
+    def env_key(self) -> tuple:
+        """The parts that have to match across every episode of one task."""
+        return (self.image, self.env_fingerprint)
 
 
 class EpisodeResult(BaseModel):
