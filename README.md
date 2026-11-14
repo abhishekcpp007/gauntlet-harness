@@ -145,6 +145,10 @@ One more real-world case: packaging has 63,350 tests, more than fits in the 15 m
 
 All told, these fixes won back 14 of the 53 tasks, all of which the first version threw away.
 
+A shipped task can also break after it ships. The harness pinned an older repo2env than the one that built the markupsafe LHT task, from before C sources got a compiler line in the install script. On any machine without the image cached, markupsafe would rebuild on a different fingerprint and get refused as drifted. Nobody would have seen it until someone tried. `gauntlet check-envs --tasks datasets/*/tasks.jsonl` now recomputes all 147 fingerprints in CI, with no Docker.
+
+Its first run from a cold clone found a second one. cachetools #424's base commit sits on no branch, so a fresh clone doesn't have it, and rebuilding that env crashed with `not a tree object`. The builder had fetched it by sha back when it made the task, but the rebuild never did. Both do now.
+
 ## Red-teaming the grader
 
 Stripping test edits stops the obvious cheat, a `conftest.py` hook that marks every test as passed. But what if the cheat lives in source code, which the grader has to keep? So I wrote a cheater zoo. The original `cheater` sits in it too, and the new ones only touch the module the real fix touches:

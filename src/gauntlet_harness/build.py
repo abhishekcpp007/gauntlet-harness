@@ -135,13 +135,20 @@ def _has_commit(repo: Repo, sha: str) -> bool:
         return False
 
 
+def fetch_commit(repo: Repo, sha: str) -> None:
+    """Fetch a commit no branch holds any more, like a merge commit on a rewritten branch.
+    GitHub still serves it by sha, but a fresh clone doesn't have it."""
+    if not _has_commit(repo, sha):
+        subprocess.run(["git", "-C", str(repo.path), "fetch", "-q", "origin", sha], capture_output=True)
+
+
 def resolve_commits(repo: Repo, pr: PRInfo) -> tuple[str, str]:
     """(base, solution). The solution is the merge (or squash) commit and the base is its
     first parent, which is exactly what the PR changed as merged, unlike the API's base sha
     that can lag behind the branch it merged into."""
     sha = pr.merge_commit_sha
-    if sha and not _has_commit(repo, sha):
-        subprocess.run(["git", "-C", str(repo.path), "fetch", "-q", "origin", sha], capture_output=True)
+    if sha:
+        fetch_commit(repo, sha)
     if sha and _has_commit(repo, sha):
         base = git(repo.path, "rev-parse", f"{sha}^1").strip()
         return base, sha
@@ -153,10 +160,7 @@ def resolve_commits(repo: Repo, pr: PRInfo) -> tuple[str, str]:
     )
     if not _has_commit(repo, ref) or not pr.base_sha:
         raise GitError(f"can't find the commits for PR #{pr.number}")
-    if not _has_commit(repo, pr.base_sha):
-        subprocess.run(
-            ["git", "-C", str(repo.path), "fetch", "-q", "origin", pr.base_sha], capture_output=True
-        )
+    fetch_commit(repo, pr.base_sha)
     head = git(repo.path, "rev-parse", ref).strip()
     base = git(repo.path, "merge-base", pr.base_sha, head).strip()
     return base, head

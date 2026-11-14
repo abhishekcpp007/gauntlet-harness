@@ -226,6 +226,33 @@ def cmd_leakcheck(args: argparse.Namespace) -> int:
     return 1 if bad else 0
 
 
+def cmd_check_envs(args: argparse.Namespace) -> int:
+    """Recompute each task's env fingerprint the way a fresh machine would before rebuilding it.
+
+    A task file outlives the code that built it. If repo2env's install script for a repo moves,
+    `ensure_image` rebuilds a different env and refuses to grade on it, but only on the first
+    machine without the image, long after the change that broke it.
+    """
+    from gauntlet_repo2env.repo import clone
+
+    from .build import env_fingerprint, fetch_commit
+
+    repos: dict[str, Any] = {}
+    drifted = 0
+    for path in args.tasks:
+        for task in _read_models(path, HarnessTask):
+            if task.repo not in repos:
+                repos[task.repo] = clone(task.repo)
+            fetch_commit(repos[task.repo], task.base_commit)
+            python = str(task.validation.get("python", "3.12"))
+            now, _ = env_fingerprint(repos[task.repo], task.base_commit, python)
+            ok = now == task.env_fingerprint
+            drifted += not ok
+            shipped = task.env_fingerprint[:16]
+            print(f"{'ok   ' if ok else 'DRIFT'} {task.instance_id} {shipped} now {now[:16]}")
+    return 1 if drifted else 0
+
+
 def _budget(args: argparse.Namespace):
     """A Budget when any ceiling was asked for, otherwise None."""
     from .budget import Budget, parse_prices
@@ -564,6 +591,10 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("leakcheck", help="re-run the leak checks on built tasks")
     p.add_argument("--tasks", required=True)
     p.set_defaults(fn=cmd_leakcheck)
+
+    p = sub.add_parser("check-envs", help="check that every task's env still rebuilds on its fingerprint")
+    p.add_argument("--tasks", required=True, nargs="+")
+    p.set_defaults(fn=cmd_check_envs)
 
     p = sub.add_parser("run", help="run policies on tasks")
     p.add_argument("--tasks", required=True)

@@ -69,13 +69,14 @@ def ensure_image(task: HarnessTask, cache_dir: Path | None = None, log=lambda _:
             return
         except ImageNotFound:
             pass
-        from .build import ensure_env  # build imports this module
+        from .build import ensure_env, fetch_commit  # build imports this module
 
         repo = cached_clone(task.repo, cache_dir)
         python = str(task.validation.get("python", "3.12"))
         log(f"{task.instance_id}: no local image {task.image}, rebuilding it at {task.base_commit[:12]}")
         # lock order is always image -> clone, so this can't deadlock with cached_clone
         with _locked(cache_dir, f"clone-{slug_for(task.repo)}"):
+            fetch_commit(repo, task.base_commit)
             tag, fingerprint, _ = ensure_env(
                 task.repo, repo, task.base_commit, python=python, cache_dir=cache_dir, log=log
             )

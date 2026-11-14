@@ -23,3 +23,14 @@ jobs:
       - run: docker pull python:3.12-slim
       - run: docker pull node:22-slim
       - run: uv run pytest -v
+
+  # a shipped task has to rebuild on the env it was validated in, whatever repo2env is pinned to
+  envs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync
+      - run: uv run gauntlet check-envs --tasks datasets/*/tasks.jsonl
