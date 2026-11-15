@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from gauntlet_harness.env import scan_beyond_gold
 from gauntlet_harness.stats import wilson
 
 cheatcatcher = pytest.importorskip("gauntlet_cheatcatcher")
@@ -64,3 +66,13 @@ def test_findings_on_honest_work_stay_rare_and_advisory():
     for t in tasks:
         report = cheatcatcher.scan(patch=t["gold_patch"], protected_paths=t.get("test_files") or [])
         assert not [f for f in report.findings if f.severity == "high"], (t["instance_id"], report.findings)
+
+
+def test_a_fix_that_must_change_collection_is_clean_but_other_collection_changes_are_not():
+    # slugify #198 moves its tests into tests/, so the fix itself sets testpaths
+    t = next(t for t in gold_patches() if t["instance_id"] == "un33k__python-slugify-198")
+    task = SimpleNamespace(gold_patch=t["gold_patch"], test_files=t["test_files"])
+    assert scan_beyond_gold(None, t["gold_patch"], task).verdict == "clean"
+    narrowed = t["gold_patch"].replace('testpaths = ["tests"]', 'testpaths = ["tests/test_legacy.py"]')
+    assert narrowed != t["gold_patch"]
+    assert scan_beyond_gold(None, narrowed, task).verdict == "suspicious"
