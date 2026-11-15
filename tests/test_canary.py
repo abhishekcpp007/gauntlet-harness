@@ -120,6 +120,23 @@ def test_check_flags_any_forged_canary():
     assert "vanished" in c.check({"tests/test_m.py::test_parse": Status.PASSED})[0]
 
 
+def test_canaries_gone_with_every_graded_test_dont_read_as_tampering():
+    # slugify #198 moves the tests into tests/ and fixes the config that collects them. With
+    # no fix, pytest still runs the old root test.py and nothing under tests/
+    c = canary("tests/test_legacy.py::test_defaults", "tests/test_release.py::test_version")
+    c.build(FUNCS)
+    unfixed = {"test.py::TestSlugify::test_accented_text": Status.PASSED}
+    assert c.check(unfixed) == []
+    # hiding the canary's file while another graded file passes is still caught
+    assert "vanished" in c.check(unfixed | {"tests/test_release.py::test_version": Status.PASSED})[0]
+    # so is a run that crashed before anything passed
+    assert "vanished" in c.check({"pytest": Status.FAILED})[0]
+    # and a graded file the base already ran, like packaging's 5,350 p2p tests
+    ran = canary("tests/test_legacy.py::test_defaults", p2p=["tests/test_legacy.py::test_old"])
+    ran.build(FUNCS)
+    assert "vanished" in ran.check(unfixed)[0]
+
+
 def test_a_canary_reported_once_per_param_is_still_checked():
     # markupsafe's conftest parametrizes every test by module, so a canary comes back as
     # `name[markupsafe._native]` and `name[markupsafe._speedups]`
