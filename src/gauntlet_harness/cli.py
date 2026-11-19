@@ -6,6 +6,7 @@ gauntlet leakcheck --tasks tasks.jsonl
 gauntlet run      --tasks tasks.jsonl --policies oracle,noop,claude:claude-opus-5-5 --attempts 3 -o runs/
 gauntlet report   --results runs/results.jsonl --cutoff 2026-06-01
 gauntlet export   --format sft --results runs/results.jsonl -o sft.jsonl
+gauntlet export   --format harbor --tasks tasks.jsonl -o harbor-tasks/
 gauntlet pipeline --repo pallets/click --merged-after 2026-06-01 --policies ... -o runs/
 """
 
@@ -350,6 +351,24 @@ def cmd_serve(args: argparse.Namespace) -> int:
 def cmd_export(args: argparse.Namespace) -> int:
     from . import export
 
+    if args.format == "harbor":
+        if not args.tasks:
+            print("error: --format harbor needs --tasks", file=sys.stderr)
+            return 2
+        from . import harbor
+
+        out_dir = Path(args.output)
+        written, refused = 0, []
+        for task in _read_models(args.tasks, HarnessTask):
+            try:
+                harbor.export_task(task, out_dir, strict=not args.lenient)
+                written += 1
+            except harbor.HarborExportError as exc:
+                refused.append(str(exc))
+        for why in refused:
+            print(f"skipped {why}", file=sys.stderr)
+        print(f"wrote {written} harbor tasks to {out_dir}, skipped {len(refused)}")
+        return 0 if written else 1
     out = _out(args.output)
     if args.format == "swebench":
         if not args.tasks:
@@ -618,9 +637,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("-o", "--output", default="runs")
     p.set_defaults(fn=cmd_serve)
 
-    p = sub.add_parser("export", help="tasks to SWE-bench format, episodes to SFT / GRPO / DPO data")
-    p.add_argument("--format", choices=["swebench", "sft", "grpo", "dpo"], required=True)
-    p.add_argument("--tasks", help="tasks.jsonl (swebench)")
+    p = sub.add_parser(
+        "export", help="tasks to SWE-bench format or Harbor task folders, episodes to SFT / GRPO / DPO data"
+    )
+    p.add_argument("--format", choices=["swebench", "harbor", "sft", "grpo", "dpo"], required=True)
+    p.add_argument("--tasks", help="tasks.jsonl (swebench, harbor)")
+    p.add_argument(
+        "--lenient",
+        action="store_true",
+        help="harbor: edits to the graded test files are thrown away but no longer zero the run",
+    )
     p.add_argument("--results", help="results.jsonl (sft, grpo, dpo)")
     p.add_argument("--min-reward", type=float, default=0.5, help="sft: lowest reward kept")
     p.add_argument("--margin", type=float, default=0.5, help="dpo: smallest chosen/rejected reward gap")
