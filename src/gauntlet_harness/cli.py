@@ -350,6 +350,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
 def cmd_export(args: argparse.Namespace) -> int:
     from . import export
 
+    if args.format == "harbor":
+        return _export_harbor(args)
     out = _out(args.output)
     if args.format == "swebench":
         if not args.tasks:
@@ -372,6 +374,28 @@ def cmd_export(args: argparse.Namespace) -> int:
     n = export.write_jsonl(rows, out)
     print(f"wrote {n} {args.format} rows to {out}")
     return 0
+
+
+def _export_harbor(args: argparse.Namespace) -> int:
+    from .harbor import export_task
+
+    if not args.tasks:
+        print("error: --format harbor needs --tasks", file=sys.stderr)
+        return 2
+    dest = Path(args.output)
+    dest.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for task in _read_models(args.tasks, HarnessTask):
+        export_task(task, dest, grader_ref=args.grader_ref)
+        n += 1
+    print(f"wrote {n} Harbor tasks to {dest}")
+    return 0
+
+
+def cmd_harbor_grade(args: argparse.Namespace) -> int:
+    from .harbor import harbor_grade
+
+    return harbor_grade(Path(args.task), Path(args.patch), Path(args.out))
 
 
 CALIBRATION_POLICIES = [
@@ -618,9 +642,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("-o", "--output", default="runs")
     p.set_defaults(fn=cmd_serve)
 
-    p = sub.add_parser("export", help="tasks to SWE-bench format, episodes to SFT / GRPO / DPO data")
-    p.add_argument("--format", choices=["swebench", "sft", "grpo", "dpo"], required=True)
-    p.add_argument("--tasks", help="tasks.jsonl (swebench)")
+    p = sub.add_parser(
+        "export", help="tasks to Harbor or SWE-bench format, episodes to SFT / GRPO / DPO data"
+    )
+    p.add_argument("--format", choices=["harbor", "swebench", "sft", "grpo", "dpo"], required=True)
+    p.add_argument("--tasks", help="tasks.jsonl (harbor, swebench)")
+    p.add_argument(
+        "--grader-ref", default="main", help="harbor: gauntlet-harness commit the verifier installs"
+    )
     p.add_argument("--results", help="results.jsonl (sft, grpo, dpo)")
     p.add_argument("--min-reward", type=float, default=0.5, help="sft: lowest reward kept")
     p.add_argument("--margin", type=float, default=0.5, help="dpo: smallest chosen/rejected reward gap")
@@ -629,6 +658,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("-o", "--output", required=True)
     p.set_defaults(fn=cmd_export)
+
+    p = sub.add_parser("harbor-grade", help="grade inside a Harbor verifier (what tests/test.sh runs)")
+    p.add_argument("--task", required=True, help="the task's task.json")
+    p.add_argument("--patch", required=True, help="the agent's diff, collected from its container")
+    p.add_argument("--out", required=True, help="where reward.json and gauntlet.json go")
+    p.set_defaults(fn=cmd_harbor_grade)
 
     p = sub.add_parser("calibrate", help="red-team the harness: oracle must win, every cheat must lose")
     p.add_argument("--tasks", required=True)

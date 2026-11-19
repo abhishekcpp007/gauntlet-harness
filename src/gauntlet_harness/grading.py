@@ -432,10 +432,19 @@ def grade_patch(
         from .profiles import profile_for
 
         timeout = profile_for(task).grade_timeout
-    runner = runner_for(task)
-    kept, ignored = strip_test_changes(patch, task.to_repo2env())
     sb = boot(task, apply_tests=False, baseline_git=False, timeout=timeout, record=False, cache_dir=cache_dir)
+    return grade_in(sb, task, patch, timeout=timeout)
+
+
+def grade_in(sb, task: HarnessTask, patch: str, *, timeout: float) -> GradeResult:
+    """Grade `patch` in a started sandbox whose workdir holds the task's base commit, and close it.
+
+    `grade_patch` boots that sandbox itself. A Harbor verifier container is already one, a fresh
+    copy of the task's env that never saw the agent, so it calls this directly.
+    """
+    runner = runner_for(task)
     try:
+        kept, ignored = strip_test_changes(patch, task.to_repo2env())
         try:
             apply_patch(sb, task.workdir, kept, "candidate")
         except PatchFailed as e:
