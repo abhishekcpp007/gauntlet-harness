@@ -80,6 +80,25 @@ project and pytest are installed. There's no network, and a separate checker fla
 tests or the test runner, so fix the real behavior."""
 
 
+def instructions(task: HarnessTask, max_steps: int) -> str:
+    """What the agent is told at the start of an episode, here or in a Harbor task."""
+    if task.horizon is not None:
+        return LHT_INSTRUCTIONS.format(
+            repo=task.pr.repo,
+            workdir=task.workdir,
+            from_ref=task.horizon.from_ref,
+            to_ref=task.horizon.to_ref,
+            max_steps=max_steps,
+            statement=task.problem_statement.strip(),
+        )
+    return INSTRUCTIONS.format(
+        repo=task.pr.repo,
+        workdir=task.workdir,
+        statement=task.problem_statement.strip(),
+        toolchain=TOOLCHAIN[runner_for(task).name],
+    )
+
+
 def scan_beyond_gold(trajectory, patch: str, task: HarnessTask):
     """Scan the agent's work, minus any patch finding the merged fix makes too. slugify #198's
     fix is a `testpaths` line, which the pytest-config rule flags, and an agent that writes the
@@ -147,22 +166,7 @@ class SWEEnv:
         self._agent_start = len(self.sb.trajectory) if self.sb.trajectory else 0
         self.steps, self.actions, self.observations, self.result = 0, [], [], None
         self._started = time.time()
-        if self.task.horizon is not None:
-            obs = LHT_INSTRUCTIONS.format(
-                repo=self.task.pr.repo,
-                workdir=self.task.workdir,
-                from_ref=self.task.horizon.from_ref,
-                to_ref=self.task.horizon.to_ref,
-                max_steps=self.max_steps,
-                statement=self.task.problem_statement.strip(),
-            )
-        else:
-            obs = INSTRUCTIONS.format(
-                repo=self.task.pr.repo,
-                workdir=self.task.workdir,
-                statement=self.task.problem_statement.strip(),
-                toolchain=TOOLCHAIN[runner_for(self.task).name],
-            )
+        obs = instructions(self.task, self.max_steps)
         info = {
             "instance_id": self.task.instance_id,
             "category": self.task.category,

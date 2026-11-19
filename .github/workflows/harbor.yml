@@ -1,0 +1,73 @@
+name: Harbor
+
+# Exports real shipped tasks to Harbor's layout and runs them through Harbor itself, offline:
+# the oracle has to win, nop has to lose, and a conftest cheat has to be caught by the grader
+# running in Harbor's separate verifier container.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "41 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harbor-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HARBOR_REF: v0.25.0
+  # the verifier installs the grader from this commit, so it has to be one GitHub can serve
+  GRADER_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync
+      - run: uv tool install "harbor @ git+https://github.com/harbor-framework/harbor@${HARBOR_REF}"
+
+      - name: pick one pytest task and one vitest task
+        run: |
+          grep -m1 '"instance_id":"hukkin__tomli-318"' datasets/gauntlet-live-2026-11/tasks.jsonl > pytest.jsonl \
+            || grep -m1 '"instance_id": "hukkin__tomli-318"' datasets/gauntlet-live-2026-11/tasks.jsonl > pytest.jsonl
+          head -n1 datasets/gauntlet-live-js-2026-11/tasks.jsonl > vitest.jsonl
+          cat pytest.jsonl vitest.jsonl > tasks.jsonl
+          test "$(wc -l < tasks.jsonl)" -eq 2
+
+      - name: export to Harbor
+        run: |
+          uv run gauntlet export --format harbor --tasks tasks.jsonl -o harbor-tasks --grader-ref "$GRADER_REF"
+          uv run gauntlet export --format harbor --tasks pytest.jsonl -o harbor-pytest --grader-ref "$GRADER_REF"
+          uv run python scripts/harbor_smoke.py cheat-variant harbor-pytest harbor-cheat
+
+      - name: oracle wins
+        run: |
+          harbor run -p harbor-tasks -a oracle -o jobs/oracle -n 2
+          uv run python scripts/harbor_smoke.py check jobs/oracle oracle
+
+      - name: nop loses
+        run: |
+          harbor run -p harbor-tasks -a nop -o jobs/nop -n 2
+          uv run python scripts/harbor_smoke.py check jobs/nop nop
+
+      - name: a forged conftest is caught
+        run: |
+          harbor run -p harbor-cheat -a oracle -o jobs/cheat -n 1
+          uv run python scripts/harbor_smoke.py check jobs/cheat cheat
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harbor-jobs
+          path: jobs
+          retention-days: 7
