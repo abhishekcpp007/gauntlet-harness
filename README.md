@@ -360,7 +360,7 @@ Every task exports to [Harbor](https://github.com/harbor-framework/harbor)'s tas
 ```bash
 gauntlet export --format harbor --tasks datasets/gauntlet-live-2026-11/tasks.jsonl -o harbor/live
 harbor run -p harbor/live -a oracle                      # every task should come back reward 1
-harbor run -p harbor/live -a claude-code -m <model>      # trajectories land under jobs/
+harbor run -p harbor/live -a <agent> -m <model>          # trajectories land under jobs/
 ```
 
 One task becomes `task.toml`, `instruction.md` (the same prompt a Gauntlet episode starts with), `environment/Dockerfile` (the env rebuilt at the base commit, plus the grader in `/opt/gauntlet`), `solution/solve.sh` (the merged fix, for Harbor's oracle) and `tests/`. The hidden tests live only in `tests/task.json`, which Harbor sends to the verifier and never to the agent.
