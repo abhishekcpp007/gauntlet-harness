@@ -353,12 +353,31 @@ curl -X POST localhost:8765/step -d '{"type": "submit"}'
 
 The episode is graded and recorded exactly like `gauntlet run`. I tested it by playing a prettytable task myself through Claude Code (Claude Opus 5.5) in 7 steps. It resolved the task (1/1 F2P, 337/337 P2P), came back clean from Cheat Catcher, and scored a rubric of 1.00 and a reward of 0.979. It missed 1.0 only because my fix was written differently from the merged one, which is the known weakness of SWE-RL style similarity.
 
+## Run it on Harbor
+
+Every task exports to [Harbor](https://github.com/harbor-framework/harbor)'s task layout, so any agent Harbor can drive (Claude Code, Codex, OpenHands, mini-swe-agent and the rest) runs on Gauntlet tasks and gets Gauntlet's grading:
+
+```bash
+gauntlet export --format harbor --tasks datasets/gauntlet-live-2026-11/tasks.jsonl -o harbor/live
+harbor run -p harbor/live -a oracle                      # every task should come back reward 1
+harbor run -p harbor/live -a claude-code -m <model>      # trajectories land under jobs/
+```
+
+One task becomes `task.toml`, `instruction.md` (the same prompt a Gauntlet episode starts with), `environment/Dockerfile` (the env rebuilt at the base commit, plus the grader in `/opt/gauntlet`), `solution/solve.sh` (the merged fix, for Harbor's oracle) and `tests/`. The hidden tests live only in `tests/task.json`, which Harbor sends to the verifier and never to the agent.
+
+The part that matters is where grading happens. When the agent stops, a collect hook diffs its tree into `/logs/artifacts/gauntlet.patch`. Harbor then starts a **separate verifier container** from the same Dockerfile, a fresh env that never saw the agent, carries only that diff across, and runs `gauntlet harbor-grade` there. That's the same grader `gauntlet run` uses, with canaries, renamed targets and file hashes, plus Cheat Catcher's patch rules. It writes `reward.json` with Gauntlet's reward and `resolved`, and `gauntlet.json` with the full grade. The rubric judge is left out because the verifier is offline, and its weight is spread over the rest the way `compute_reward` already does.
+
+Both containers start with no network. An agent that calls a model API from inside its container needs that host let through: `--agent-host api.anthropic.com` turns the agent's network into an allowlist of exactly that. Never allow GitHub, or the merged fix is one fetch away. Harbor's local Docker provider can't change a container's network once it's running, so the policy is set at start time, and blocking needs the `nft_fib_inet` kernel module. GitHub's Linux runners have it. Docker Desktop on a Mac doesn't, so a local run there needs `public` swapped in by hand.
+
+The [Harbor workflow](.github/workflows/harbor.yml) checks all of this on every push, offline, on a real pytest task and a real vitest task: `oracle` has to come back resolved at reward 1, `nop` has to lose, and a forged conftest that rewrites every report to "passed" has to be caught by the verifier.
+
 ## Turn episodes into training data
 
 Every episode leaves a trajectory (`runs/trajectories/`), an RL record with each action and what came back (`runs/rl/`), and a line in `runs/results.jsonl`. `gauntlet export` turns those into what trainers read:
 
 | Format | What you get | Kept |
 |---|---|---|
+| `harbor` | one [Harbor](#run-it-on-harbor) task folder per task, graded by Gauntlet in Harbor's verifier | every task |
 | `swebench` | SWE-bench instances (`FAIL_TO_PASS`, `PASS_TO_PASS` as JSON strings) | every task |
 | `sft` | chat transcripts with function calls, plus the tool schemas | solved, clean runs above `--min-reward` (rejection sampling) |
 | `grpo` | each episode with its group-relative advantage | tasks where attempts disagree, since equal rewards carry no signal |
@@ -483,7 +502,7 @@ Two choices behind those numbers. The interval is a bootstrap that resamples **t
 
 ## Fresh tasks every week
 
-The [Live tasks](.github/workflows/live.yml) workflow runs every Monday. It collects the last two weeks of merged PRs from the repos in [`datasets/live-repos.txt`](datasets/live-repos.txt), builds and leak-checks them, validates each one with the calibration policies, and publishes the task set, the SWE-bench export and an HTML report as a build artifact. You can also start it by hand with a different look-back window.
+The [Live tasks](.github/workflows/live.yml) workflow runs every Monday. It collects the last two weeks of merged PRs from the repos in [`datasets/live-repos.txt`](datasets/live-repos.txt), builds and leak-checks them, validates each one with the calibration policies, and publishes the task set as Harbor task folders, ready for `harbor run`, with an HTML report as a build artifact. You can also start it by hand with a different look-back window.
 
 ## Limits
 

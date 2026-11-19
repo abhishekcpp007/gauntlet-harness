@@ -129,13 +129,24 @@ def test_task_toml_runs_the_verifier_apart_and_offline(tmp_path):
     cfg = tomllib.loads(harbor.task_toml(task))
     assert cfg["task"]["name"] == "gauntlet/o__calc-1"
     assert cfg["verifier"]["environment_mode"] == "separate"
-    assert cfg["agent"]["network_mode"] == cfg["verifier"]["network_mode"] == "no-network"
+    assert (
+        cfg["environment"]["network_mode"] == cfg["verifier"]["environment"]["network_mode"] == "no-network"
+    )
+    assert "network_mode" not in cfg["agent"]  # local Docker can't switch policy after start
     (collect,) = cfg["verifier"]["collect"]
     assert harbor.PATCH_ARTIFACT in collect["command"] and "git diff --cached --binary" in collect["command"]
     profile = profile_for(task)
     assert cfg["agent"]["timeout_sec"] == profile.max_steps * profile.command_timeout
     assert cfg["verifier"]["timeout_sec"] > profile.grade_timeout
     assert cfg["metadata"]["base_commit"] == task.base_commit
+
+
+def test_agent_hosts_open_an_allowlist_but_never_for_the_verifier(tmp_path):
+    task = _task(Path("/workspace/repo"), tmp_path)
+    cfg = tomllib.loads(harbor.task_toml(task, ("api.anthropic.com",)))
+    assert cfg["environment"]["network_mode"] == "allowlist"
+    assert cfg["environment"]["allowed_hosts"] == ["api.anthropic.com"]
+    assert cfg["verifier"]["environment"]["network_mode"] == "no-network"
 
 
 def test_lht_tasks_get_the_long_budget(tmp_path):

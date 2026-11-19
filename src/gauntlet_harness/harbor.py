@@ -81,10 +81,24 @@ def _toml_str(value: str) -> str:
     return json.dumps(value)
 
 
-def task_toml(task: HarnessTask) -> str:
+def task_toml(task: HarnessTask, agent_hosts: tuple[str, ...] = ()) -> str:
+    """The agent's container starts offline. `agent_hosts` opens an allowlist for an agent that
+    calls a model API from inside it; GitHub must never be on it, or the merged fix is a fetch
+    away. Network policy is set when a container starts, since local Docker can't switch it later."""
     runner = runner_for(task)
     profile = profile_for(task)
     collect = f"cd {shlex.quote(task.workdir)} && git add -A && git diff --cached --binary > {PATCH_ARTIFACT}"
+    resources = [
+        f"cpus = {max(1, int(runner.cpus))}",
+        f"memory_mb = {_memory_mb(runner.memory)}",
+        f"storage_mb = {STORAGE_MB}",
+        "gpus = 0",
+    ]
+    if agent_hosts:
+        hosts = ", ".join(_toml_str(h) for h in agent_hosts)
+        network = ['network_mode = "allowlist"', f"allowed_hosts = [{hosts}]"]
+    else:
+        network = ['network_mode = "no-network"']
     keywords = ", ".join(_toml_str(k) for k in ("gauntlet", task.category, runner.name))
     lines = [
         'schema_version = "1.0"',
@@ -104,24 +118,25 @@ def task_toml(task: HarnessTask) -> str:
         f"gauntlet_format = {_toml_str(task.format)}",
         "",
         "[agent]",
-        'network_mode = "no-network"',
         f"timeout_sec = {agent_timeout(task):.1f}",
         "",
         "[verifier]",
         'environment_mode = "separate"',
-        'network_mode = "no-network"',
         f"timeout_sec = {profile.grade_timeout + GRADE_MARGIN_SEC:.1f}",
         "",
         "[[verifier.collect]]",
         f"command = {_toml_str(collect)}",
         f"timeout_sec = {COLLECT_TIMEOUT_SEC:.1f}",
         "",
+        # its own fresh container from the same Dockerfile, offline from the start
+        "[verifier.environment]",
+        'network_mode = "no-network"',
+        *resources,
+        "",
         "[environment]",
+        *network,
         f"build_timeout_sec = {BUILD_TIMEOUT_SEC:.1f}",
-        f"cpus = {max(1, int(runner.cpus))}",
-        f"memory_mb = {_memory_mb(runner.memory)}",
-        f"storage_mb = {STORAGE_MB}",
-        "gpus = 0",
+        *resources,
         "",
     ]
     return "\n".join(lines)
@@ -180,7 +195,14 @@ mkdir -p {VERIFIER_LOGS}
 """
 
 
-def export_task(task: HarnessTask, dest: Path, *, grader_ref: str, cache_dir: Path | None = None) -> Path:
+def export_task(
+    task: HarnessTask,
+    dest: Path,
+    *,
+    grader_ref: str,
+    agent_hosts: tuple[str, ...] = (),
+    cache_dir: Path | None = None,
+) -> Path:
     """Write one task in Harbor's layout under dest/<instance_id>. Needs the repo clone, for the
     install script of the base commit."""
     from .build import fetch_commit
@@ -194,7 +216,7 @@ def export_task(task: HarnessTask, dest: Path, *, grader_ref: str, cache_dir: Pa
     root = dest / task.instance_id
     for sub in ("environment", "solution", "tests"):
         (root / sub).mkdir(parents=True, exist_ok=True)
-    (root / "task.toml").write_text(task_toml(task))
+    (root / "task.toml").write_text(task_toml(task, agent_hosts))
     (root / "instruction.md").write_text(instructions(task, profile_for(task).max_steps) + "\n")
     (root / "environment" / "Dockerfile").write_text(
         dockerfile(task, base_image_for(stack, python), grader_ref)

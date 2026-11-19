@@ -386,7 +386,7 @@ def _export_harbor(args: argparse.Namespace) -> int:
     dest.mkdir(parents=True, exist_ok=True)
     n = 0
     for task in _read_models(args.tasks, HarnessTask):
-        export_task(task, dest, grader_ref=args.grader_ref)
+        export_task(task, dest, grader_ref=args.grader_ref, agent_hosts=tuple(args.agent_host))
         n += 1
     print(f"wrote {n} Harbor tasks to {dest}")
     return 0
@@ -649,6 +649,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--tasks", help="tasks.jsonl (harbor, swebench)")
     p.add_argument(
         "--grader-ref", default="main", help="harbor: gauntlet-harness commit the verifier installs"
+    )
+    p.add_argument(
+        "--agent-host",
+        action="append",
+        default=[],
+        help="harbor: a host the agent's container may reach, e.g. a model API (repeatable)",
     )
     p.add_argument("--results", help="results.jsonl (sft, grpo, dpo)")
     p.add_argument("--min-reward", type=float, default=0.5, help="sft: lowest reward kept")
