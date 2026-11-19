@@ -366,6 +366,33 @@ Every episode leaves a trajectory (`runs/trajectories/`), an RL record with each
 
 Cheating episodes never become SFT data, but they make good *rejected* examples. Running the live set with `--include-calibration` gives 53 DPO pairs of an honest fix against a forged test report, which is preference data aimed straight at reward hacking. The grader's own output after `submit` is left out of every transcript, so a model can't learn from it.
 
+## Run the tasks under Harbor
+
+Harbor is the harness behind Terminal-Bench 2. `gauntlet export --format harbor` writes each task as a Harbor task folder, so any agent Harbor can drive runs on Gauntlet tasks.
+
+```bash
+gauntlet export --format harbor --tasks datasets/gauntlet-live-2026-11/tasks.jsonl -o harbor-tasks/
+harbor run -p harbor-tasks -a oracle     # every task should score 1
+harbor run -p harbor-tasks -a nop        # every task should score 0
+```
+
+Each folder holds `task.toml`, `instruction.md`, a Dockerfile, the reference fix under `solution/` and the verifier under `tests/`. The Dockerfile starts from the task's env image and fetches the base commit alone, so the fix that landed later isn't in git for an agent to read back.
+
+The verifier is strict. The grader's tests replace whatever the agent left in those files. Every target test has to pass and every test that passed before has to pass still. A run that edited the graded test files scores 0 even when the fix is right. Pass `--lenient` if you'd rather throw those edits away and grade what is left. A crash in the verifier is a 0 and never a pass.
+
+The rubric rides at the end of the task, in `tests/rubric.json`. The verifier scores the items it can see from inside the container and writes them to `/logs/verifier/gauntlet.json` next to the reward. Items that need the gold patch or the cheat report are listed there as left to the harness.
+
+Run for real on Harbor 0.24, not just written out:
+
+| Set | Tasks | `oracle` | `nop` |
+|---|---|---|---|
+| Gauntlet Live, Nov 2026 | 53 | 53 / 53 | 0 / 53 |
+| Gauntlet LHT, Nov 2026 | 25 | 25 / 25 | 0 / 25 |
+
+A solution that applied the real fix and also touched a graded test file scored 0 in strict mode and 1 with `--lenient`, and both named the file.
+
+What this doesn't do. Python tasks only: the Node env images have no Python and no CA certificates, so the 69 JS/TS tasks are refused with that reason. The env images are built locally by `gauntlet build`, so Harbor needs them on the same Docker host. The canaries and the before-and-after file hashes stay in the harness's own grader, which makes the Harbor verifier the plain strict check and not the red-teamed one.
+
 ## Judging several models
 
 `--policies` takes any mix of these:
